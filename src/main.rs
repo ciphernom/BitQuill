@@ -1475,10 +1475,7 @@ impl MerkleDocument {
         let vdf_ticks = if !self.historical_ticks.is_empty() {
              let mut ticks: Vec<VDFClockTick> = self.historical_ticks.values().cloned().collect();
              ticks.sort_by_key(|t| t.sequence_number);
-             let tick_save_limit = 100; // Keep limit for VDF ticks in main file
-             if ticks.len() > tick_save_limit {
-                 ticks = ticks[ticks.len() - tick_save_limit..].to_vec();
-             }
+
              Some(ticks)
          } else {
              None
@@ -1600,11 +1597,7 @@ impl MerkleDocument {
         let vdf_ticks = if !self.historical_ticks.is_empty() {
             let mut ticks: Vec<VDFClockTick> = self.historical_ticks.values().cloned().collect();
             ticks.sort_by_key(|t| t.sequence_number);
-            // Only save the last 100 ticks to save space in main file
-            let tick_save_limit = 100;
-            if ticks.len() > tick_save_limit {
-                ticks = ticks[ticks.len() - tick_save_limit..].to_vec();
-            }
+            
             Some(ticks)
         } else {
             None
