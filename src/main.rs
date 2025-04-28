@@ -68,6 +68,10 @@ const DIFFICULTY_WINDOW_SIZE: usize = 2016;
 // Frequency of difficulty adjustments (ticks)
 const DIFFICULTY_ADJUSTMENT_INTERVAL: u64 = 2016;
 
+//MINIMUM difficulty 
+const ABSOLUTE_MIN_ITERATIONS: u64 = 5_000; // Reasonable minimum
+
+
 // Document state representing the content at a specific point
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
@@ -121,11 +125,12 @@ struct VDFClockTick {
     output_y: Vec<u8>,      // VDF output
     proof: VDFProof,        // VDF proof
     sequence_number: u64,   // Increasing sequence number
-    prev_output_hash: String, // Hash of previous output for verification
+    prev_output_hash: String, // Hash of previous output
     #[serde(skip)]
-    timestamp: Instant,     // Wall clock time when generated
+    timestamp: Instant,     // Wall clock time
     #[serde(with = "timestamp_serde")]
-    system_time: SystemTime, // System time for serialization
+    system_time: SystemTime, // System time
+    iterations: u64,        // Store difficulty used for this tick
 }
 
 // Merkle leaf representing document state at a point in time
@@ -170,7 +175,7 @@ struct DocumentMetadata {
     description: String,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, PartialOrd)] 
 pub enum VerificationLevel {
     Basic,     // Quick, superficial check
     Standard,  // Normal level of checking (default)
@@ -235,7 +240,7 @@ impl Default for DocumentMetadata {
     }
 }
 
-// Adding Default implementation for VDFClockTick
+//  Default implementation for VDFClockTick
 impl Default for VDFClockTick {
     fn default() -> Self {
         Self {
@@ -250,6 +255,7 @@ impl Default for VDFClockTick {
             prev_output_hash: String::new(),
             timestamp: Instant::now(),
             system_time: SystemTime::now(),
+            iterations: INITIAL_VDF_ITERATIONS, // Initialize with default
         }
     }
 }
@@ -625,6 +631,7 @@ impl MerkleDocument {
                     prev_output_hash,
                     timestamp: Instant::now(),
                     system_time: SystemTime::now(),
+                    iterations: current_iterations, // Store current difficulty
                 };
 
                 // Send tick to main thread
@@ -1065,7 +1072,26 @@ impl MerkleDocument {
             self.last_verification = Some(result.clone());
             return result;
         }
-
+        result.details.push(VerificationDetail {
+            description: "Verifying VDF RSA modulus strength...".to_string(),
+            valid: true, block_number: None, tick_number: None,
+        });
+        let modulus = &*self.vdf.modulus; // Get a reference to the BigUint inside the Arc
+        if !verify_modulus_strength(modulus) {
+             result.valid = false; // Mark overall result as invalid
+             result.details.push(VerificationDetail {
+                 description: "CRITICAL: VDF RSA modulus failed strength verification.".to_string(),
+                 valid: false, block_number: None, tick_number: None,
+             });
+             // Optional: You could return early if the modulus is fundamentally insecure
+             // self.last_verification = Some(result.clone());
+             // return result;
+        } else {
+             result.details.push(VerificationDetail {
+                 description: "VDF RSA modulus passed basic strength verification.".to_string(),
+                 valid: true, block_number: None, tick_number: None,
+             });
+        }
         // 1. For each paragraph (leaf), ensure it's properly linked to the previous one
         let mut expected_prev_hash = hex::encode(Sha256::digest(b"MerkleQuill Genesis Leaf").to_vec());
         
@@ -1211,8 +1237,108 @@ impl MerkleDocument {
             });
         }
         
+        // Attack: Only create leaves at favorable times
+        // Defense: Check for suspiciously large gaps between leaves
+        let max_allowed_leaf_gap = 500; // Maximum ticks between leaves (e.g., ~8 minutes if 1 tick/sec)
+        if self.leaves.len() > 1 { // Only check if there are at least two leaves
+             result.details.push(VerificationDetail {
+                 description: format!("Checking leaf gaps (max allowed: {} ticks)", max_allowed_leaf_gap),
+                 valid: true, block_number: None, tick_number: None,
+             });
+            for i in 1..self.leaves.len() {
+                let current = &self.leaves[i];
+                let previous = &self.leaves[i-1];
+                let tick_gap = current.vdf_tick_reference.saturating_sub(previous.vdf_tick_reference);
+
+                if tick_gap > max_allowed_leaf_gap {
+                    result.details.push(VerificationDetail {
+                        description: format!("SUSPICIOUS: Large gap ({} ticks) between paragraphs #{} and #{}",
+                                          tick_gap, previous.leaf_number, current.leaf_number),
+                        valid: true, // Warning only
+                        block_number: Some(current.leaf_number),
+                        tick_number: None, // Not related to a specific tick verification
+                    });
+                    // Do not set result.valid = false here.
+                }
+            }
+        }
+        
+        
         // 4. Verify VDF ticks - SIMPLIFIED
-        if level != VerificationLevel::Basic && self.historical_ticks.len() >= 2 {
+       // Ensure we have ticks and the verification level requires checking them
+        if level != VerificationLevel::Basic && !self.historical_ticks.is_empty() {
+                result.details.push(VerificationDetail {
+                    description: "Verifying VDF tick integrity...".to_string(),
+                    valid: true, block_number: None, tick_number: None,
+                });    
+                
+            // Attack: Manipulate genesis values
+            // Defense: Verify expected genesis hashes
+            if let Some(first_tick) = self.historical_ticks.get(&0) {
+              // Calculate the initial input hash (hash of the seed) used by the VDF thread
+              let initial_vdf_input_hash = Sha256::digest(b"VDF Clock Genesis").to_vec();
+
+              // Calculate the expected prev_output_hash for tick 0
+              // (This is the hash of the initial VDF input hash)
+              let expected_tick0_prev_hash = hex::encode(Sha256::digest(&initial_vdf_input_hash).to_vec());
+
+              // Now compare the stored hash with the correctly calculated expected hash
+              if first_tick.prev_output_hash != expected_tick0_prev_hash {
+                  result.valid = false;
+                  result.details.push(VerificationDetail {
+                      description: format!(
+                          "CRITICAL: Genesis VDF Tick #0 input hash mismatch! Expected {}, got {}",
+                          expected_tick0_prev_hash, first_tick.prev_output_hash
+                      ),
+                      valid: false,
+                      block_number: None,
+                      tick_number: Some(0),
+                  });
+              } else {
+                  result.details.push(VerificationDetail {
+                      description: "Genesis VDF Tick #0 input hash verified".to_string(),
+                      valid: true,
+                      block_number: None,
+                      tick_number: Some(0),
+                  });
+                  // --- Also verify the proof for the Genesis Tick ---
+                  // The input for tick 0's proof is the initial_vdf_input_hash
+                  if !self.vdf.verify(&initial_vdf_input_hash, &first_tick.proof) {
+                       result.valid = false; // Mark as invalid if genesis proof fails
+                       result.details.push(VerificationDetail {
+                            description: format!("CRITICAL: Genesis VDF Tick #0 proof failed verification"),
+                            valid: false,
+                            block_number: None,
+                            tick_number: Some(0),
+                       });
+                  } else {
+                       result.details.push(VerificationDetail {
+                            description: "Genesis VDF Tick #0 proof verified".to_string(),
+                            valid: true,
+                            block_number: None,
+                            tick_number: Some(0),
+                       });
+                  }
+                  // --- End Genesis Proof Verification ---
+              }
+            } else {
+               // Handle missing genesis tick 0 (existing logic seems okay)
+               if level >= VerificationLevel::Standard {
+                     result.valid = false;
+                     result.details.push(VerificationDetail {
+                       description: "CRITICAL: Genesis VDF tick #0 is missing".to_string(),
+                       valid: false, block_number: None, tick_number: Some(0),
+                     });
+               } else {
+                     result.details.push(VerificationDetail {
+                       description: "NOTE: Genesis VDF tick #0 not found (Basic check)".to_string(),
+                       valid: true,
+                       block_number: None, tick_number: Some(0),
+                     });
+                 }
+            }
+            
+            
             // Get sequential ticks available in memory
             let mut tick_numbers: Vec<u64> = self.historical_ticks.keys().cloned().collect();
             tick_numbers.sort();
@@ -1246,6 +1372,31 @@ impl MerkleDocument {
             // Verify each key tick's proof is valid
             for &tick_num in &key_ticks {
                 if let Some(tick) = self.historical_ticks.get(&tick_num) {
+                    //check for reasonable difficulty
+                    if tick.iterations < ABSOLUTE_MIN_ITERATIONS {
+                        result.valid = false;
+                        result.details.push(VerificationDetail {
+                            description: format!("CRITICAL: VDF tick #{} used suspiciously low difficulty ({})",
+                                               tick_num, tick.iterations),
+                            valid: false,
+                            block_number: None,
+                            tick_number: Some(tick_num),
+                        });
+                    }
+                    
+                   //check for reasonable proof parameter bits
+                    let l = BigUint::from_bytes_be(&tick.proof.l);
+                    if l.bits() < 128 {
+                        result.valid = false;
+                        result.details.push(VerificationDetail {
+                            description: format!("CRITICAL: VDF tick #{} uses insecure proof parameters",
+                                          tick_num),
+                            valid: false,
+                            block_number: None,
+                            tick_number: Some(tick_num),
+                        });
+                    }
+
                     if tick_num > 0 {
                         // Get the previous tick in our complete list
                         let prev_num = tick_num - 1;
@@ -1272,6 +1423,26 @@ impl MerkleDocument {
                                 });
                             }
                             
+                            // Attack: Modify system clock to create fake timestamps
+                            // Defense: Add timestamp consistency checks
+                            // Check only if prev_num is indeed tick_num - 1 (ensures consecutive ticks)
+                            if prev_num == tick_num - 1 {
+                                let time_diff = tick.system_time.duration_since(prev_tick.system_time)
+                                    .unwrap_or(Duration::from_secs(0));
+
+                                // Check if time is moving backward or jumping too far forward (e.g., > 1 hour)
+                                if time_diff.as_secs() == 0 || time_diff.as_secs() > 3600 {
+                                    result.valid = false;
+                                    result.details.push(VerificationDetail {
+                                        description: format!("CRITICAL: Suspicious time jump between ticks #{} and #{}: {} seconds",
+                                                         prev_num, tick_num, time_diff.as_secs()),
+                                        valid: false,
+                                        tick_number: Some(tick_num),
+                                        block_number: None,
+                                    });
+                                }
+                            }
+                            
                             // Verify proof
                             let input_for_curr = prev_tick.output_y.clone();
                             if !self.vdf.verify(&input_for_curr, &tick.proof) {
@@ -1287,6 +1458,30 @@ impl MerkleDocument {
                     }
                 }
             }
+            
+            let mut prev_tick: Option<&VDFClockTick> = None;
+
+            for &tick_num in &key_ticks {
+                if let Some(tick) = self.historical_ticks.get(&tick_num) {
+                    if let Some(prev) = prev_tick {
+                        // Max 4x change between consecutive samples (matches adjustment bounds)
+                        if tick.iterations > prev.iterations * 4 || 
+                           tick.iterations * 4 < prev.iterations {
+                            result.valid = false;
+                            result.details.push(VerificationDetail {
+                                description: format!("CRITICAL: Suspicious difficulty change between ticks #{} ({}) and #{} ({})",
+                                               prev.sequence_number, prev.iterations,
+                                               tick.sequence_number, tick.iterations),
+                                valid: false,
+                                block_number: None,
+                                tick_number: Some(tick_num),
+                            });
+                        }
+                    }
+                    prev_tick = Some(tick);
+                }
+            }
+            
         }
         
         // 5. Still do writing pattern analysis for Forensic level
@@ -1958,6 +2153,56 @@ fn get_element_hash(element: &MerkleTreeElement) -> String {
         MerkleTreeElement::Node(node) => node.hash.clone(),
         MerkleTreeElement::Leaf(leaf) => leaf.hash.clone(),
     }
+}
+
+// Attack: Predict which ticks will be verified
+// Defense: Use cryptographic mixing to make sampling unpredictable
+fn select_verification_samples(ticks: &[u64], document_hash: &str) -> Vec<u64> {
+    // Use document hash as seed for unpredictable but deterministic sampling
+    let mut hasher = Sha256::new();
+    hasher.update(document_hash.as_bytes());
+    let seed = hasher.finalize();
+
+    // Mix each tick with seed to determine if it should be sampled
+    ticks.iter()
+        .filter(|&&t| {
+            let mut tick_hasher = Sha256::new();
+            tick_hasher.update(seed.as_slice());
+            tick_hasher.update(&t.to_be_bytes());
+            let hash = tick_hasher.finalize();
+            // Sample ~20% of ticks unpredictably based on the first byte of the hash
+            hash[0] < 51 // 51/256 ≈ 19.9% probability
+        })
+        .cloned()
+        .collect()
+}
+
+// Attack: Use weak RSA modulus
+// Defense: Verify modulus properties
+fn verify_modulus_strength(modulus: &BigUint) -> bool {
+    // Verify minimum size (e.g., 1024 bits)
+    if modulus.bits() < 1024 {
+         eprintln!("Modulus too small: {} bits", modulus.bits());
+        return false;
+    }
+
+    // Quick primality check of modulus+1 and modulus-1
+    let one = BigUint::one(); // Use BigUint::one() directly
+    let modulus_plus_1 = modulus + BigUint::one();
+    let modulus_minus_1 = modulus - BigUint::one();
+
+    // Use Miller-Rabin from VDF impl with few rounds for quick check
+    let rounds = 5; // Low rounds for speed, increase if needed
+    if VDF::is_prime(&modulus_plus_1, rounds) {
+         eprintln!("Modulus+1 is probably prime - suspicious!");
+         return false; // Suspicious if either is prime
+    }
+     if VDF::is_prime(&modulus_minus_1, rounds) {
+          eprintln!("Modulus-1 is probably prime - suspicious!");
+         return false; // Suspicious if either is prime
+    }
+
+    true
 }
 
 // Multi-line text buffer for the editor
