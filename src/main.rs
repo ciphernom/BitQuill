@@ -178,6 +178,37 @@ pub enum VerificationLevel {
     Forensic   // Exhaustive verification including statistical analysis
 }
 
+// Search/Replace state
+struct SearchState {
+    search_query: String,
+    replace_text: String,
+    case_sensitive: bool,
+    current_matches: Vec<(usize, usize, usize)>, // (row, start_col, end_col)
+    current_match_idx: Option<usize>,
+    is_replace_mode: bool,
+    is_active: bool,
+}
+
+impl SearchState {
+    fn new() -> Self {
+        SearchState {
+            search_query: String::new(),
+            replace_text: String::new(),
+            case_sensitive: false,
+            current_matches: Vec::new(),
+            current_match_idx: None,
+            is_replace_mode: false,
+            is_active: false,
+        }
+    }
+    
+    fn reset(&mut self) {
+        self.current_matches.clear();
+        self.current_match_idx = None;
+    }
+}
+
+
 
 impl Default for DocumentState {
     fn default() -> Self {
@@ -237,7 +268,7 @@ struct MerkleQuillFile {
 }
 
 impl MerkleQuillFile {
-    fn new(content: String, metadata: DocumentMetadata) -> Self {
+    fn new(_content: String, metadata: DocumentMetadata) -> Self {
         MerkleQuillFile {
             metadata,
             leaves: None,
@@ -1566,7 +1597,7 @@ impl MerkleDocument {
     // Save document with Merkle tree data to file
     fn save_to_file(&mut self, path: &PathBuf) -> io::Result<()> {
         // Reconstruct full document content from paragraph leaves
-        let full_content = if !self.leaves.is_empty() {
+        let _full_content = if !self.leaves.is_empty() {
             let paragraphs: Vec<&str> = self.leaves.iter()
                 .map(|leaf| leaf.document_state.content.as_str())
                 .collect();
@@ -1956,7 +1987,106 @@ cursor_row: 0,
             line_numbers: true, // Enable line numbers by default
         }
     }
+    
+    // Find all matches of a query in the buffer
+    fn find_all(&self, query: &str, case_sensitive: bool) -> Vec<(usize, usize, usize)> {
+        let mut matches = Vec::new();
+        
+        if query.is_empty() {
+            return matches;
+        }
+        
+        for (row_idx, line) in self.lines.iter().enumerate() {
+            let haystack = if case_sensitive {
+                line.clone()
+            } else {
+                line.to_lowercase()
+            };
+            
+            let needle = if case_sensitive {
+                query.to_string()
+            } else {
+                query.to_lowercase()
+            };
+            
+            let mut start_idx = 0;
+            while let Some(found_idx) = haystack[start_idx..].find(&needle) {
+                let match_start = start_idx + found_idx;
+                let match_end = match_start + needle.len();
+                
+                matches.push((row_idx, match_start, match_end));
+                
+                // Move past this match to find the next
+                start_idx = match_start + 1;
+            }
+        }
+        
+        matches
+    }
+        // Move cursor to a specific match
+    fn move_to_match(&mut self, matched_pos: (usize, usize, usize)) {
+        let (row, col_start, _) = matched_pos;
+        
+        self.cursor_row = row;
+        self.cursor_col = col_start;
+        
+        self.ensure_cursor_visible();
+    }
+    
+        // Replace a specific match with new text
+    fn replace_match(&mut self, matched_pos: (usize, usize, usize), replace_with: &str) {
+        let (row, col_start, col_end) = matched_pos;
+        
+        // Make sure the positions are valid
+        if row < self.lines.len() {
+            let line = &mut self.lines[row];
+            
+            if col_start <= col_end && col_end <= line.len() {
+                // Remove the matched text
+                let before = line[0..col_start].to_string();
+                let after = line[col_end..].to_string();
+                
+                // Replace with the new text
+                *line = format!("{}{}{}", before, replace_with, after);
+                
+                // Update cursor position to the end of the inserted text
+                self.cursor_row = row;
+                self.cursor_col = col_start + replace_with.len();
+                
+                self.last_edit_time = Instant::now();
+                self.ensure_cursor_visible();
+            }
+        }
+    }
+    
+        // Replace all matches in the buffer
+    fn replace_all(&mut self, matches: &[(usize, usize, usize)], replace_with: &str) -> usize {
+        let mut replaced_count = 0;
+        
+        // Process matches from bottom to top to avoid invalidating positions
+        let mut sorted_matches = matches.to_vec();
+        sorted_matches.sort_by(|a, b| {
+            let (a_row, a_col, _) = a;
+            let (b_row, b_col, _) = b;
+            
+            b_row.cmp(a_row).then(b_col.cmp(a_col))
+        });
+        
+        for &matched_pos in &sorted_matches {
+            self.replace_match(matched_pos, replace_with);
+            replaced_count += 1;
+        }
+        
+        if replaced_count > 0 {
+            self.last_edit_time = Instant::now();
+            // Record history after batch replace
+            self.record_history();
+        }
+        
+        replaced_count
+    }
 
+    
     fn insert_char(&mut self, c: char) {
         if c == '\n' {
             // Split the current line at cursor
@@ -2513,6 +2643,7 @@ enum AppMode {
     FileDialog,     // Indicates a file dialog is active
     MetadataEdit,   // Editing metadata fields
     Help,           // Display help screen
+    Search,         // Mode for search/replace
 }
 
 struct App {
@@ -2531,6 +2662,7 @@ struct App {
     status_time: Instant, // For temporary status indicators
     show_tick_indicator: bool,
     auto_save_enabled: bool,
+    search_state: SearchState,
 }
 
 impl App {
@@ -2554,6 +2686,7 @@ impl App {
             status_time: Instant::now(),
             show_tick_indicator: false,
             auto_save_enabled: true, // Auto-save on by default
+            search_state: SearchState::new(),
         }
     }
 
@@ -3254,6 +3387,15 @@ impl App {
             "  Enter        - New Line / Confirm Dialog Action".to_string(),
             "  Backspace    - Delete Character Behind Cursor".to_string(),
             "  Ctrl+Z       - Undo (basic)".to_string(),
+              "".to_string(),
+            "Search & Replace:".to_string(),
+            "  Ctrl+F       - Find Text".to_string(),
+            "  Ctrl+H       - Find and Replace".to_string(),
+            "  Ctrl+N       - Find Next Match".to_string(),
+            "  Ctrl+P       - Find Previous Match".to_string(),
+            "  Ctrl+R       - Replace Current Match".to_string(),
+            "  Ctrl+A       - Replace All Matches".to_string(),
+            "  F5       - Toggle Case Sensitivity".to_string(),
             "".to_string(),
             "Verification:".to_string(),
             "  Ctrl+V       - Verify Merkle Tree Integrity".to_string(),
@@ -3295,6 +3437,208 @@ impl App {
         } else {
             self.message = "Undo only available in Editing mode".to_string();
         }
+    }
+    
+        // Start a search operation
+    fn start_search(&mut self, replace_mode: bool) {
+        if self.mode != AppMode::Editing {
+            // Only allow search from editing mode
+            self.message = "Search only available in Editing mode".to_string();
+            return;
+        }
+        
+        self.search_state.is_active = true;
+        self.search_state.is_replace_mode = replace_mode;
+        self.search_state.reset();
+        self.mode = AppMode::Search;
+        
+        let action = if replace_mode { "Replace" } else { "Search" };
+        self.message = format!("{}: Enter search text and press Enter", action);
+    }
+    
+    // Execute the search
+    fn execute_search(&mut self) {
+        if self.search_state.search_query.is_empty() {
+            self.message = "Search query cannot be empty".to_string();
+            return;
+        }
+        
+        // Find all matches
+        let matches = self.buffer.find_all(
+            &self.search_state.search_query,
+            self.search_state.case_sensitive
+        );
+        
+        if matches.is_empty() {
+            self.message = format!("No matches found for '{}'", self.search_state.search_query);
+            self.search_state.reset();
+        } else {
+            self.search_state.current_matches = matches.clone();
+            self.search_state.current_match_idx = Some(0);
+            
+            // Go to the first match
+            self.go_to_current_match();
+            
+            self.message = format!(
+                "Found {} matches for '{}'",
+                self.search_state.current_matches.len(),
+                self.search_state.search_query
+            );
+        }
+    }
+    
+    // Navigate to the current match
+    fn go_to_current_match(&mut self) {
+        if let Some(idx) = self.search_state.current_match_idx {
+            if idx < self.search_state.current_matches.len() {
+                let matched_pos = self.search_state.current_matches[idx];
+                self.buffer.move_to_match(matched_pos);
+            }
+        }
+    }
+    
+    // Go to next match
+    fn find_next(&mut self) {
+        if self.search_state.current_matches.is_empty() {
+            // No matches to navigate
+            return;
+        }
+        
+        let next_idx = match self.search_state.current_match_idx {
+            Some(idx) => (idx + 1) % self.search_state.current_matches.len(),
+            None => 0,
+        };
+        
+        self.search_state.current_match_idx = Some(next_idx);
+        self.go_to_current_match();
+        
+        self.message = format!(
+            "Match {}/{} for '{}'",
+            next_idx + 1,
+            self.search_state.current_matches.len(),
+            self.search_state.search_query
+        );
+    }
+    
+    // Go to previous match
+    fn find_prev(&mut self) {
+        if self.search_state.current_matches.is_empty() {
+            // No matches to navigate
+            return;
+        }
+        
+        let total = self.search_state.current_matches.len();
+        let prev_idx = match self.search_state.current_match_idx {
+            Some(idx) => (idx + total - 1) % total,
+            None => total - 1,
+        };
+        
+        self.search_state.current_match_idx = Some(prev_idx);
+        self.go_to_current_match();
+        
+        self.message = format!(
+            "Match {}/{} for '{}'",
+            prev_idx + 1,
+            self.search_state.current_matches.len(),
+            self.search_state.search_query
+        );
+    }
+    
+    // Replace current match and move to next
+    fn replace_current(&mut self) {
+        if !self.search_state.is_replace_mode || self.search_state.current_matches.is_empty() {
+            return;
+        }
+        
+        if let Some(idx) = self.search_state.current_match_idx {
+            if idx < self.search_state.current_matches.len() {
+                let matched_pos = self.search_state.current_matches[idx];
+                self.buffer.replace_match(matched_pos, &self.search_state.replace_text);
+                
+                // Mark document as dirty
+                self.document.dirty = true;
+                
+                // Refresh the matches as positions have changed
+                self.refresh_search();
+                
+                self.message = "Replaced match and moved to next".to_string();
+            }
+        }
+    }
+    
+    // Replace all matches at once
+    fn replace_all(&mut self) {
+        if !self.search_state.is_replace_mode || self.search_state.current_matches.is_empty() {
+            return;
+        }
+        
+        let count = self.buffer.replace_all(
+            &self.search_state.current_matches,
+            &self.search_state.replace_text
+        );
+        
+        // Mark document as dirty
+        self.document.dirty = true;
+        
+        // Clear matches since they've all been replaced
+        self.search_state.reset();
+        
+        self.message = format!("Replaced {} occurrences", count);
+    }
+    
+    // Refresh search matches after editing text
+    fn refresh_search(&mut self) {
+        if self.search_state.is_active && !self.search_state.search_query.is_empty() {
+            let current_idx = self.search_state.current_match_idx;
+            
+            // Re-run the search to get updated positions
+            let matches = self.buffer.find_all(
+                &self.search_state.search_query,
+                self.search_state.case_sensitive
+            );
+            
+            if matches.is_empty() {
+                self.search_state.reset();
+                self.message = "No more matches after edit".to_string();
+            } else {
+                self.search_state.current_matches = matches.clone();
+                
+                // Try to maintain the current match index if possible
+                if let Some(idx) = current_idx {
+                    if idx < matches.len() {
+                        self.search_state.current_match_idx = Some(idx);
+                    } else {
+                        self.search_state.current_match_idx = Some(0);
+                    }
+                } else {
+                    self.search_state.current_match_idx = Some(0);
+                }
+                
+                self.go_to_current_match();
+            }
+        }
+    }
+    
+    // Toggle case sensitivity for search
+    fn toggle_case_sensitivity(&mut self) {
+        self.search_state.case_sensitive = !self.search_state.case_sensitive;
+        
+        // Re-run search with new case sensitivity setting
+        if self.search_state.is_active && !self.search_state.search_query.is_empty() {
+            self.refresh_search();
+        }
+        
+        self.message = format!(
+            "Case sensitivity: {}",
+            if self.search_state.case_sensitive { "On" } else { "Off" }
+        );
+    }
+    
+    // Exit search mode
+    fn exit_search(&mut self) {
+        self.mode = AppMode::Editing;
+        self.search_state.is_active = false;
+        self.message = "Search/Replace closed".to_string();
     }
 }
 
@@ -3338,9 +3682,11 @@ fn main() -> Result<(), io::Error> {
                         AppMode::TreeView => handle_tree_view_input(&mut app, key),
                         AppMode::MetadataEdit => handle_metadata_edit_input(&mut app, key),
                         AppMode::Help => handle_help_input(&mut app, key),
-                        AppMode::FileDialog => false, // Should be handled by handle_dialog_input
+                        AppMode::Search => handle_search_input(&mut app, key), // Add this line
+                        AppMode::FileDialog => false,
                     };
                 }
+
 
                 // 3. Handle Global Input (if not handled by dialog or mode)
                 if !key_handled {
@@ -3718,7 +4064,11 @@ fn handle_global_input(app: &mut App, key: event::KeyEvent) -> bool {
             true
         },
         KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            app.trigger_new_document();
+            if app.mode == AppMode::Search {
+                app.find_next();
+            } else {
+                app.trigger_new_document();
+            }
             true
         },
         KeyCode::Char('v') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -3737,6 +4087,40 @@ fn handle_global_input(app: &mut App, key: event::KeyEvent) -> bool {
             app.undo();
             true
         },
+        KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            // Ctrl+F for search
+            app.start_search(false);
+            true
+        },
+        KeyCode::Char('h') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            // Ctrl+H for replace
+            app.start_search(true);
+            true
+        },
+        KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            if app.mode == AppMode::Search {
+                app.find_prev();
+                true
+            } else if app.search_state.is_active && app.mode == AppMode::Editing {
+                app.find_prev();
+                true
+            } else {
+                false
+            }
+        },
+        KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) && app.mode == AppMode::Search => {
+            if app.search_state.is_replace_mode {
+                app.replace_current();
+            }
+            true
+        },
+        KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) && app.mode == AppMode::Search => {
+            if app.search_state.is_replace_mode {
+                app.replace_all();
+            }
+            true
+        },
+        
         // --- Alt Keybindings ---
         KeyCode::Char(c @ '1'..='9') if key.modifiers.contains(KeyModifiers::ALT) => {
             let index = (c as u8 - b'1') as usize; // 1-based index
@@ -3751,6 +4135,7 @@ fn handle_global_input(app: &mut App, key: event::KeyEvent) -> bool {
             app.toggle_line_numbers();
             true
         },
+        
         // --- F-Key Bindings ---
         KeyCode::F(1) => { // F1 global toggle for help
             app.toggle_help();
@@ -3772,9 +4157,17 @@ fn handle_global_input(app: &mut App, key: event::KeyEvent) -> bool {
                 false
             }
         },
+        KeyCode::F(5) if app.mode == AppMode::Search => {
+            app.toggle_case_sensitivity();
+            true
+        },
         // --- Other Global Keys ---
         KeyCode::Esc => { // Global Esc always requests quit (with checks)
-            app.request_quit();
+            if app.mode == AppMode::Search {
+                app.exit_search();
+            } else {
+                app.request_quit();
+            }
             true
         },
         _ => false // Not a global keybinding
@@ -3826,6 +4219,7 @@ fn ui(f: &mut tui::Frame<CrosstermBackend<io::Stdout>>, app: &mut App) {
         AppMode::FileDialog => "FILE DIALOG",
         AppMode::MetadataEdit => "EDIT METADATA",
         AppMode::Help => "HELP",
+        AppMode::Search => "SEARCH", 
     };
 
     let status_spans = Line::from(vec![
@@ -4070,6 +4464,23 @@ fn ui(f: &mut tui::Frame<CrosstermBackend<io::Stdout>>, app: &mut App) {
         },
         AppMode::Help => {
             render_help_screen(f, content_area, app);
+        },
+        AppMode::Search => {
+            // Create a centered dialog for search/replace
+            let dialog_area = centered_rect(70, 20, content_area); // 70% width, 20% height
+            render_search_ui(f, dialog_area, app);
+            
+            // Render editor content behind the dialog (dimmed)
+            let editor_block = Block::default().borders(Borders::ALL).title("Editor");
+            let editor_area = editor_block.inner(content_area);
+            let visible_height = editor_area.height as usize;
+            let display_lines = app.buffer.get_display_lines(visible_height);
+            let text: Vec<Line> = display_lines.into_iter().map(Line::from).collect();
+            let input = Paragraph::new(text)
+                .style(Style::default().fg(Color::DarkGray)); // Dimmed text while searching
+            
+            f.render_widget(editor_block, content_area);
+            f.render_widget(input, editor_area);
         },
         AppMode::FileDialog => {
             // This case should ideally be handled by the dialog rendering at the start
@@ -4326,4 +4737,189 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
             .as_ref(),
         )
         .split(popup_layout[1])[1]
+}
+
+// Handle input in Search mode
+fn handle_search_input(app: &mut App, key: event::KeyEvent) -> bool {
+    
+    // Check for Ctrl+key combinations
+    if key.modifiers.contains(KeyModifiers::CONTROL) {
+        if let KeyCode::Char(c) = key.code {
+            match c {
+                'n' => {
+                    app.find_next();
+                    return true;
+                },
+                'p' => {
+                    app.find_prev();
+                    return true;
+                },
+                'r' => {
+                    if app.search_state.is_replace_mode {
+                        app.replace_current();
+                    }
+                    return true;
+                },
+                'a' => {
+                    if app.search_state.is_replace_mode {
+                        app.replace_all();
+                    }
+                    return true;
+                },
+                _ => {} // Other Ctrl combinations
+            }
+        }
+    }
+
+    // Handle non-modifier keys
+    match key.code {
+        KeyCode::Esc => {
+            app.exit_search();
+            true
+        },
+        KeyCode::Enter => {
+            if app.search_state.search_query.is_empty() {
+                if app.search_state.is_replace_mode && !app.search_state.replace_text.is_empty() {
+                    // Switch to entering search query
+                    app.search_state.replace_text.clear();
+                    app.message = "Search: Enter search text and press Enter".to_string();
+                } else {
+                    app.exit_search();
+                }
+            } else if app.search_state.is_replace_mode && app.search_state.replace_text.is_empty() {
+                // In replace mode, after entering search query, prompt for replace text
+                app.execute_search();
+                app.message = "Replace: Enter replacement text and press Enter".to_string();
+            } else {
+                // Execute the search or confirm replace text
+                app.execute_search();
+            }
+            true
+        },
+        KeyCode::Backspace => {
+            if app.search_state.is_replace_mode && !app.search_state.search_query.is_empty() {
+                // Editing replace text
+                app.search_state.replace_text.pop();
+            } else {
+                // Editing search query
+                app.search_state.search_query.pop();
+            }
+            true
+        },
+        KeyCode::Down => {
+            app.find_next();
+            true
+        },
+        KeyCode::Up => {
+            app.find_prev();
+            true
+        },
+        KeyCode::F(5) => {
+            app.toggle_case_sensitivity();
+            true
+        },
+        KeyCode::Char(c) => {
+            if app.search_state.is_replace_mode && !app.search_state.search_query.is_empty() {
+                // Entering replace text
+                app.search_state.replace_text.push(c);
+            } else {
+                // Entering search query
+                app.search_state.search_query.push(c);
+            }
+            true
+        },
+        _ => false,
+    }
+}
+
+
+// Render search/replace UI
+fn render_search_ui(f: &mut tui::Frame<CrosstermBackend<io::Stdout>>, area: Rect, app: &App) {
+    let title = if app.search_state.is_replace_mode {
+        "Search & Replace"
+    } else {
+        "Search"
+    };
+    
+    let block = Block::default().borders(Borders::ALL).title(title);
+    let inner_area = block.inner(area);
+    
+    // Define layout
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(
+            [
+                Constraint::Length(1), // Search query input
+                Constraint::Length(1), // Replace text input (if in replace mode)
+                Constraint::Length(1), // Status/count line
+                Constraint::Length(1), // Hints line
+            ]
+            .as_ref(),
+        )
+        .split(inner_area);
+    
+    // Render the main dialog border
+    f.render_widget(block, area);
+    
+    // 1. Search query input
+    let search_style = Style::default().fg(Color::Yellow);
+    let search_text = format!("Search: {}", app.search_state.search_query);
+    let search_input = Paragraph::new(search_text).style(search_style);
+    f.render_widget(search_input, chunks[0]);
+    
+    // 2. Replace text input (only in replace mode)
+    if app.search_state.is_replace_mode {
+        let replace_style = if app.search_state.search_query.is_empty() {
+            Style::default().fg(Color::DarkGray) // Dim when not active
+        } else {
+            Style::default().fg(Color::Yellow)
+        };
+        
+        let replace_text = format!("Replace: {}", app.search_state.replace_text);
+        let replace_input = Paragraph::new(replace_text).style(replace_style);
+        f.render_widget(replace_input, chunks[1]);
+    }
+    
+    // 3. Status/count line
+    let status_text = if !app.search_state.current_matches.is_empty() {
+        let current = app.search_state.current_match_idx.unwrap_or(0) + 1;
+        let total = app.search_state.current_matches.len();
+        format!("Match {}/{} - Case sensitive: {}", 
+                current, total, 
+                if app.search_state.case_sensitive { "Yes" } else { "No" })
+    } else if !app.search_state.search_query.is_empty() {
+        "No matches found".to_string()
+    } else {
+        "Enter search term and press Enter".to_string()
+    };
+    
+    let status = Paragraph::new(status_text)
+        .style(Style::default().fg(Color::White));
+    f.render_widget(status, chunks[2]);
+    
+    // 4. Hints line
+    let hints = if app.search_state.is_replace_mode {
+        "Enter: Search/Confirm | Esc: Cancel | Ctrl+N: Next | Ctrl+P: Prev | Ctrl+R: Replace | Ctrl+A: Replace All | F5: Toggle Case"
+    } else {
+        "Enter: Search/Confirm | Esc: Cancel | Ctrl+N: Next | Ctrl+P: Prev | F5: Toggle Case"
+    };
+    
+    let hints_para = Paragraph::new(hints)
+        .style(Style::default().fg(Color::DarkGray));
+    f.render_widget(hints_para, chunks[3]);
+    
+    // Set cursor position
+    if app.search_state.is_replace_mode && !app.search_state.search_query.is_empty() {
+        // Editing replace text
+        f.set_cursor(
+            chunks[1].x + 9 + app.search_state.replace_text.len() as u16, // "Replace: " = 9 chars
+            chunks[1].y,
+        );
+    } else {
+        // Editing search query
+        f.set_cursor(
+            chunks[0].x + 8 + app.search_state.search_query.len() as u16, // "Search: " = 8 chars
+            chunks[0].y,
+        );
+    }
 }
