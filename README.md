@@ -13,6 +13,7 @@ Throughout history, the integrity of written information has been safeguarded by
 Digitization has stripped away these inherent security properties. With the rapid rise of Large Language Models capable of producing increasingly convincing text, we need new methods to verify human authorship.
 
 ## BitQuill: A Digital Witness to Human Creation
+![Screenshot of App](https://raw.githubusercontent.com/ciphernom/BitQuill/refs/heads/main/screenshots/Screenshot%20from%202025-04-28%2013-16-29.png)
 
 BitQuill provides a solution through a novel application of Verifiable Delay Functions (VDFs) and Merkle trees, creating a tamper-evident record of document creation that captures the temporal nature of human writing.
 
