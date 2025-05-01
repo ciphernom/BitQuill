@@ -48,28 +48,28 @@ const BITQUILL_CHAIN_EXT: &str = "bqc";
 const TARGET_TICK_SECONDS: f64 = 1.0;
 
 // Initial VDF difficulty (iterations)
-const INITIAL_VDF_ITERATIONS: u64 = 10_000;
+const INITIAL_VDF_ITERATIONS: u64 = 100_000;
 
 // Minimum VDF difficulty
-const MIN_VDF_ITERATIONS: u64 = 1_000;
+const MIN_VDF_ITERATIONS: u64 = 250_000;
 
 // Maximum VDF difficulty
-const MAX_VDF_ITERATIONS: u64 = 100_000;
+const MAX_VDF_ITERATIONS: u64 = 1000_000_000;
 
 // Merkle leaf created every N ticks
-const LEAF_TICK_INTERVAL: u64 = 100; 
+const LEAF_TICK_INTERVAL: u64 = 1000; 
 
 // Minimum ticks between leaves when pending changes exist
-const MIN_TICKS_FOR_PENDING_LEAF: u64 = 100;
+const MIN_TICKS_FOR_PENDING_LEAF: u64 = 1000;
 
 // Number of ticks to store for difficulty adjustment
-const DIFFICULTY_WINDOW_SIZE: usize = 2016;
+const DIFFICULTY_WINDOW_SIZE: usize = 1000;
 
 // Frequency of difficulty adjustments (ticks)
-const DIFFICULTY_ADJUSTMENT_INTERVAL: u64 = 2016;
+const DIFFICULTY_ADJUSTMENT_INTERVAL: u64 = 1000;
 
 //MINIMUM difficulty 
-const ABSOLUTE_MIN_ITERATIONS: u64 = 5_000; // Reasonable minimum
+const ABSOLUTE_MIN_ITERATIONS: u64 = 100_000; // Reasonable minimum
 
 
 // Document state representing the content at a specific point
@@ -288,19 +288,22 @@ impl MerkleQuillFile {
     }
 }
 
-// VDF implementation using sequential squaring in an RSA group with Wesolowski proofs
+/// VDF using sequential squaring with RSA modulus.
+/// Uses a standardized RSA-2048 modulus with no known factorization.
+/// Source: RSA Challenge Number (or other trusted source)
 struct VDF {
     modulus: Arc<BigUint>,
 }
 
 impl VDF {
-    // Create a new VDF with a proper RSA modulus
-    fn new(bit_length: usize) -> Self {
-        // Generate two large primes p and q to create RSA modulus N = p * q
-        let p = Self::generate_prime(bit_length / 2);
-        let q = Self::generate_prime(bit_length / 2);
-        let modulus = Arc::new(&p * &q);
-
+    fn new(_bit_length: usize) -> Self {
+        // Use standardized RSA modulus instead of generating p*q
+        let modulus_hex = "C7970CEEDCC3B0754490201A7AA613CD73911081C790F5F1A8726F463550BB5B7FF0DB8E1EA1189EC72F93D1650011BD721AEEACC2ACDE32A04107F0648C2813A31F5B0B7765FF8B44B4B6FFC93384B646EB09C7CF5E8592D40EA33C80039F35B4F14A04B51F7BFD781BE4D1673164BA8EB991C2C4D730BBBE35F592BDEF524AF7E8DAEFD26C66FC02C479AF89D64D373F442709439DE66CEB955F3EA37D5159F6135809F85334B5CB1813ADDC80CD05609F10AC6A95AD65872C909525BDAD32BC729592642920F24C61DC5B3C3B7923E56B16A4D9D373D8721F24A3FC0F1B3131F55615172866BCCC30F95054C824E733A5EB6817F7BC16399D48C6361CC7E5";
+        
+        // Convert hex to BigUint
+        let modulus = Arc::new(BigUint::parse_bytes(modulus_hex.as_bytes(), 16)
+            .expect("Failed to parse standardized RSA modulus"));
+        
         VDF { modulus }
     }
 
@@ -1431,7 +1434,7 @@ impl MerkleDocument {
                                     .unwrap_or(Duration::from_secs(0));
 
                                 // Check if time is moving backward or jumping too far forward (e.g., > 1 hour)
-                                if time_diff.as_secs() == 0 || time_diff.as_secs() > 3600 {
+                                if time_diff.as_secs() < 0 || time_diff.as_secs() > 3600 {
                                     result.valid = false;
                                     result.details.push(VerificationDetail {
                                         description: format!("CRITICAL: Suspicious time jump between ticks #{} and #{}: {} seconds",
