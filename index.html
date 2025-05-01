@@ -1,0 +1,3273 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="BitQuill - Cryptographic proof of human authorship in an AI-generated world. Preserve the value of your work with verifiable time commitments.">
+    <meta property="og:title" content="BitQuill - Proving Human Authorship">
+    <meta property="og:description" content="Preserve the value of human authorship in an AI-generated world with cryptographic proof of effort and time.">
+    <meta property="og:image" content="https://bitquill.io/assets/images/og-image.jpg">
+    <meta property="og:url" content="https://bitquill.io">
+    <meta name="twitter:card" content="summary_large_image">
+    <title>BitQuill - Cryptographic Proof of Human Authorship</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    <style>
+        :root {
+            --primary: #3772ff;
+            --primary-dark: #2563eb;
+            --primary-light: #60a5fa;
+            --secondary: #f7931a;
+            --secondary-dark: #e67e00;
+            --secondary-light: #fbbf24;
+            --dark: #111827;
+            --dark-secondary: #1f2937;
+            --light: #f9fafb;
+            --gray: #6b7280;
+            --gray-light: #9ca3af;
+            --success: #10b981;
+            --warning: #f59e0b;
+            --danger: #ef4444;
+            --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            --section-spacing: 6rem;
+            --transition-base: all 0.3s ease;
+        }
+        
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            font-family: var(--font-sans);
+        }
+        
+        html {
+            scroll-behavior: smooth;
+        }
+        
+        body {
+            background-color: var(--light);
+            color: var(--dark);
+            line-height: 1.6;
+            overflow-x: hidden;
+        }
+        
+        .container {
+            width: 100%;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 0 2rem;
+        }
+        
+        /* Header */
+        header {
+            background-color: var(--dark);
+            color: white;
+            padding: 1rem 0;
+            position: fixed;
+            width: 100%;
+            z-index: 100;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+            transition: padding 0.3s ease;
+            backdrop-filter: blur(5px);
+        }
+        
+        header.scrolled {
+            padding: 0.75rem 0;
+            background-color: rgba(17, 24, 39, 0.95);
+        }
+        
+        .header-content {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .logo {
+            display: flex;
+            align-items: center;
+            font-weight: 700;
+            font-size: 1.5rem;
+            color: white;
+            text-decoration: none;
+            transition: var(--transition-base);
+        }
+        
+        .logo:hover {
+            transform: translateY(-2px);
+        }
+        
+        .logo span.highlight {
+            color: var(--secondary);
+            margin-left: 3px;
+        }
+        
+        .nav-links {
+            display: flex;
+            gap: 2rem;
+            align-items: center;
+        }
+        
+        .nav-links a {
+            color: white;
+            text-decoration: none;
+            font-weight: 500;
+            transition: color 0.2s;
+            position: relative;
+        }
+        
+        .nav-links a::after {
+            content: '';
+            position: absolute;
+            width: 0;
+            height: 2px;
+            background: var(--secondary);
+            bottom: -4px;
+            left: 0;
+            transition: width 0.3s ease;
+        }
+        
+        .nav-links a:hover {
+            color: var(--secondary);
+        }
+        
+        .nav-links a:hover::after {
+            width: 100%;
+        }
+        
+        .mobile-menu-button {
+            display: none;
+            background: none;
+            border: none;
+            color: white;
+            font-size: 1.5rem;
+            cursor: pointer;
+        }
+        
+        /* Buttons */
+        .btn {
+            display: inline-block;
+            padding: 0.75rem 1.5rem;
+            background-color: var(--primary);
+            color: white;
+            text-decoration: none;
+            border-radius: 0.375rem;
+            font-weight: 500;
+            transition: var(--transition-base);
+            cursor: pointer;
+            text-align: center;
+            border: none;
+            outline: none;
+            position: relative;
+            overflow: hidden;
+            z-index: 1;
+        }
+        
+        .btn::after {
+            content: '';
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            width: 100%;
+            height: 0;
+            background-color: rgba(255, 255, 255, 0.1);
+            transition: height 0.3s ease;
+            z-index: -1;
+        }
+        
+        .btn:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+        }
+        
+        .btn:hover::after {
+            height: 100%;
+        }
+        
+        .btn:active {
+            transform: translateY(-1px);
+        }
+        
+        .btn-secondary {
+            background-color: var(--secondary);
+        }
+        
+        .btn-outline {
+            background-color: transparent;
+            border: 2px solid var(--primary);
+            color: var(--primary);
+        }
+        
+        .btn-outline:hover {
+            background-color: var(--primary);
+            color: white;
+        }
+        
+        .btn-dark {
+            background-color: var(--dark);
+        }
+        
+        .btn-lg {
+            padding: 1rem 2rem;
+            font-size: 1.1rem;
+        }
+        
+        .btn-group {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 1rem;
+            margin-top: 2rem;
+        }
+        
+        /* Hero Section */
+        .hero {
+            padding-top: 8rem;
+            padding-bottom: 6rem;
+            background: linear-gradient(135deg, var(--dark) 0%, var(--dark-secondary) 100%);
+            color: white;
+            text-align: center;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .hero-particles {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            opacity: 0.2;
+            pointer-events: none;
+        }
+        
+        .hero-content {
+            position: relative;
+            z-index: 2;
+            max-width: 800px;
+            margin: 0 auto;
+        }
+        
+        .hero h1 {
+            font-size: 3.5rem;
+            line-height: 1.2;
+            margin-bottom: 1.5rem;
+            background: linear-gradient(90deg, white, var(--secondary));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            animation: fadeUp 1s ease-out;
+        }
+        
+        .hero p {
+            font-size: 1.25rem;
+            max-width: 700px;
+            margin: 0 auto 2rem;
+            color: #d1d5db;
+            animation: fadeUp 1s ease-out 0.2s forwards;
+            opacity: 0;
+        }
+        
+        .hero-buttons {
+            display: flex;
+            gap: 1rem;
+            justify-content: center;
+            margin-top: 2.5rem;
+            animation: fadeUp 1s ease-out 0.4s forwards;
+            opacity: 0;
+        }
+        
+        .hero-video {
+            margin-top: 3rem;
+            position: relative;
+            border-radius: 0.5rem;
+            overflow: hidden;
+            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.2);
+            max-width: 800px;
+            margin-left: auto;
+            margin-right: auto;
+            transform: perspective(1000px) rotateX(5deg);
+            animation: fadeUp 1s ease-out 0.6s forwards;
+            opacity: 0;
+        }
+        
+        .hero-video img {
+            width: 100%;
+            height: auto;
+            display: block;
+            transition: var(--transition-base);
+        }
+        
+        .hero-video:hover img {
+            transform: scale(1.02);
+        }
+        
+        .play-button {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background-color: rgba(255, 255, 255, 0.9);
+            width: 80px;
+            height: 80px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            transition: var(--transition-base);
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.2);
+        }
+        
+        .play-button i {
+            color: var(--primary);
+            font-size: 2rem;
+            margin-left: 5px;
+        }
+        
+        .play-button:hover {
+            transform: translate(-50%, -50%) scale(1.1);
+            background-color: white;
+        }
+        
+        /* Sections */
+        section {
+            padding: var(--section-spacing) 0;
+            position: relative;
+        }
+        
+        section.with-bg {
+            background-color: #f3f4f6;
+        }
+        
+        .section-title {
+            text-align: center;
+            margin-bottom: 3rem;
+        }
+        
+        .section-title h2 {
+            font-size: 2.5rem;
+            color: var(--dark);
+            margin-bottom: 1rem;
+            position: relative;
+            display: inline-block;
+            z-index: 1;
+        }
+        
+        .section-title h2::after {
+            content: '';
+            position: absolute;
+            width: 50%;
+            height: 8px;
+            background: var(--secondary-light);
+            bottom: 0;
+            left: 25%;
+            z-index: -1;
+            opacity: 0.4;
+        }
+        
+        .section-title p {
+            font-size: 1.25rem;
+            color: var(--gray);
+            max-width: 800px;
+            margin: 0 auto;
+        }
+        
+        /* AI vs Human comparison */
+        .comparison {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 2rem;
+            margin: 3rem 0;
+        }
+
+        .comparison-column {
+            background-color: white;
+            border-radius: 1rem;
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
+            padding: 2.5rem;
+            position: relative;
+            overflow: hidden;
+            transition: var(--transition-base);
+            transform: translateY(0);
+        }
+        
+        .comparison-column:hover {
+            transform: translateY(-10px);
+            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.2);
+        }
+
+        .comparison-header {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            margin-bottom: 2rem;
+            padding-bottom: 1rem;
+            border-bottom: 1px solid #e5e7eb;
+        }
+
+        .comparison-icon {
+            width: 3.5rem;
+            height: 3.5rem;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 50%;
+            font-size: 1.5rem;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+        }
+
+        .ai-icon {
+            background-color: var(--danger);
+            color: white;
+        }
+
+        .human-icon {
+            background-color: var(--success);
+            color: white;
+        }
+        
+        .comparison-header h3 {
+            font-size: 1.5rem;
+            margin-bottom: 0;
+        }
+
+        .comparison-timeline {
+            height: 320px;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .timeline-scale {
+            position: absolute;
+            left: 0;
+            top: 0;
+            height: 100%;
+            width: 30px;
+            border-right: 1px dashed #e5e7eb;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            padding: 10px 0;
+        }
+
+        .timeline-hour {
+            font-size: 0.75rem;
+            color: var(--gray);
+        }
+
+        .timeline-events {
+            margin-left: 50px;
+            height: 100%;
+            position: relative;
+        }
+
+        .timeline-event {
+            position: absolute;
+            left: 0;
+            padding: 0.75rem;
+            width: calc(100% - 20px);
+            font-size: 0.875rem;
+            transition: all 0.3s ease;
+            animation: fadeInRight 0.5s forwards;
+            opacity: 0;
+        }
+
+        .timeline-event:hover {
+            transform: translateX(5px);
+            z-index: 10;
+        }
+
+        .ai-timeline .timeline-event {
+            background-color: rgba(239, 68, 68, 0.1);
+            border-left: 3px solid var(--danger);
+            animation-delay: calc(var(--i) * 0.1s);
+        }
+
+        .human-timeline .timeline-event {
+            background-color: rgba(16, 185, 129, 0.1);
+            border-left: 3px solid var(--success);
+            animation-delay: calc(var(--i) * 0.1s);
+        }
+        
+        /* Problem Solution */
+        .problem-solution {
+            display: flex;
+            gap: 2rem;
+            margin: 3rem 0;
+        }
+
+        .problem-column, .solution-column {
+            flex: 1;
+            padding: 2.5rem;
+            border-radius: 1rem;
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
+            transition: var(--transition-base);
+        }
+        
+        .problem-column:hover, .solution-column:hover {
+            transform: translateY(-10px);
+            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.2);
+        }
+
+        .problem-column {
+            background-color: rgba(239, 68, 68, 0.1);
+            border-left: 6px solid var(--danger);
+        }
+
+        .solution-column {
+            background-color: rgba(16, 185, 129, 0.1);
+            border-left: 6px solid var(--success);
+        }
+
+        .column-header {
+            display: flex;
+            gap: 1rem;
+            align-items: center;
+            margin-bottom: 1.5rem;
+            padding-bottom: 1rem;
+            border-bottom: 1px solid rgba(0, 0, 0, 0.1);
+        }
+
+        .column-title {
+            font-size: 1.5rem;
+            font-weight: 600;
+        }
+
+        .problem-title {
+            color: var(--danger);
+        }
+
+        .solution-title {
+            color: var(--success);
+        }
+
+        .problem-list, .solution-list {
+            list-style: none;
+        }
+
+        .problem-list li, .solution-list li {
+            margin-bottom: 1.25rem;
+            padding-left: 1.75rem;
+            position: relative;
+        }
+
+        .problem-list li::before, .solution-list li::before {
+            content: '';
+            position: absolute;
+            left: 0;
+            top: 0.5rem;
+            width: 0.5rem;
+            height: 0.5rem;
+            border-radius: 50%;
+        }
+
+        .problem-list li::before {
+            background-color: var(--danger);
+        }
+
+        .solution-list li::before {
+            background-color: var(--success);
+        }
+        
+        .problem-list li strong, .solution-list li strong {
+            display: block;
+            margin-bottom: 0.25rem;
+        }
+        
+        /* How it Works */
+        .how-it-works {
+            background-color: #f3f4f6;
+            overflow: hidden;
+        }
+
+        .step-container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            max-width: 900px;
+            margin: 0 auto;
+            position: relative;
+        }
+        
+        .step-container::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            bottom: 0;
+            left: 50%;
+            width: 4px;
+            background-color: var(--primary-light);
+            transform: translateX(-50%);
+            z-index: 0;
+        }
+
+        .step {
+            display: flex;
+            align-items: center;
+            width: 100%;
+            margin-bottom: 4rem;
+            opacity: 0;
+            transform: translateY(30px);
+            transition: opacity 0.7s, transform 0.7s;
+            position: relative;
+            z-index: 1;
+        }
+
+        .step.visible {
+            opacity: 1;
+            transform: translateY(0);
+        }
+
+        .step:nth-child(odd) {
+            flex-direction: row;
+        }
+
+        .step:nth-child(even) {
+            flex-direction: row-reverse;
+        }
+
+        .step-number {
+            flex: 0 0 100px;
+            width: 100px;
+            height: 100px;
+            background: linear-gradient(135deg, var(--primary) 0%, var(--primary-dark) 100%);
+            color: white;
+            font-size: 2.5rem;
+            font-weight: bold;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 50%;
+            margin: 0 2rem;
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.2);
+            position: relative;
+            z-index: 2;
+        }
+        
+        .step-number::after {
+            content: '';
+            position: absolute;
+            width: 120%;
+            height: 120%;
+            border: 2px dashed var(--primary-light);
+            border-radius: 50%;
+            animation: spin 20s linear infinite;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .step-content {
+            flex: 1;
+            background-color: white;
+            padding: 2.5rem;
+            border-radius: 1rem;
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
+            transition: var(--transition-base);
+            max-width: calc(100% - 200px);
+        }
+        
+        .step-content:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.2);
+        }
+
+        .step-title {
+            font-size: 1.5rem;
+            margin-bottom: 1rem;
+            color: var(--primary);
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        
+        .step-title i {
+            font-size: 1.25rem;
+        }
+        
+        .step-description {
+            color: var(--gray);
+            margin-bottom: 1rem;
+        }
+        
+        .learn-more {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            color: var(--primary);
+            font-weight: 500;
+            text-decoration: none;
+            margin-top: 1rem;
+            transition: var(--transition-base);
+        }
+        
+        .learn-more:hover {
+            color: var(--primary-dark);
+            gap: 0.75rem;
+        }
+        
+        /* Features */
+        .features {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+            gap: 2.5rem;
+            margin-top: 3rem;
+        }
+        
+        .feature-card {
+            background-color: white;
+            border-radius: 1rem;
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
+            padding: 2.5rem;
+            transition: var(--transition-base);
+            cursor: pointer;
+            position: relative;
+            overflow: hidden;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+        }
+        
+        .feature-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 4px;
+            background: linear-gradient(90deg, var(--primary), var(--secondary));
+            transform: scaleX(0);
+            transform-origin: left;
+            transition: transform 0.5s ease;
+        }
+        
+        .feature-card:hover {
+            transform: translateY(-10px);
+            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.2);
+        }
+        
+        .feature-card:hover::before {
+            transform: scaleX(1);
+        }
+        
+        .feature-icon {
+            margin-bottom: 1.5rem;
+            position: relative;
+            width: 4rem;
+            height: 4rem;
+        }
+        
+        .feature-icon-bg {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            border-radius: 1rem;
+            background: linear-gradient(135deg, var(--primary-light) 0%, var(--primary) 100%);
+            opacity: 0.2;
+        }
+        
+        .feature-icon i {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            font-size: 2rem;
+            color: var(--primary);
+        }
+        
+        .feature-card h3 {
+            font-size: 1.5rem;
+            margin-bottom: 1rem;
+        }
+        
+        .feature-card p {
+            color: var(--gray);
+            margin-bottom: 1.5rem;
+        }
+        
+        .feature-details {
+            height: 0;
+            overflow: hidden;
+            opacity: 0;
+            transition: var(--transition-base);
+            color: var(--gray);
+        }
+        
+        .feature-card.expanded .feature-details {
+            height: auto;
+            opacity: 1;
+            margin-top: 1.5rem;
+            padding-top: 1.5rem;
+            border-top: 1px solid #e5e7eb;
+        }
+        
+        .expand-button {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            color: var(--primary);
+            background: none;
+            border: none;
+            cursor: pointer;
+            font-weight: 500;
+            padding: 0;
+            margin-top: auto;
+            font-size: 0.875rem;
+            transition: var(--transition-base);
+        }
+        
+        .expand-button:hover {
+            color: var(--primary-dark);
+            gap: 0.75rem;
+        }
+        
+        .feature-card.expanded .expand-button .expand-text {
+            display: none;
+        }
+        
+        .feature-card:not(.expanded) .collapse-text {
+            display: none;
+        }
+        
+        /* Interactive Demo */
+        .interactive-section {
+            background: linear-gradient(135deg, var(--dark) 0%, var(--dark-secondary) 100%);
+            color: white;
+            padding: var(--section-spacing) 0;
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .interactive-section .section-title h2 {
+            color: white;
+        }
+        
+        .interactive-section .section-title p {
+            color: var(--gray-light);
+        }
+        
+        .interactive-background {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            opacity: 0.1;
+            pointer-events: none;
+        }
+        
+        .demo-container {
+            margin: 3rem auto;
+            max-width: 1000px;
+            background-color: white;
+            border-radius: 1rem;
+            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.2);
+            overflow: hidden;
+            color: var(--dark);
+            transform: perspective(1000px) rotateX(2deg);
+            transition: var(--transition-base);
+        }
+        
+        .demo-container:hover {
+            transform: perspective(1000px) rotateX(0);
+        }
+        
+        .demo-header {
+            background-color: var(--dark);
+            color: white;
+            padding: 1.25rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .demo-title {
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        
+        .demo-title i {
+            color: var(--secondary);
+        }
+        
+        .demo-controls {
+            display: flex;
+            gap: 0.75rem;
+        }
+        
+        .demo-button {
+            background-color: transparent;
+            border: 1px solid white;
+            color: white;
+            border-radius: 0.25rem;
+            padding: 0.4rem 0.75rem;
+            font-size: 0.875rem;
+            cursor: pointer;
+            transition: var(--transition-base);
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        
+        .demo-button:hover {
+            background-color: white;
+            color: var(--dark);
+        }
+        
+        .demo-button i {
+            font-size: 0.75rem;
+        }
+        
+        .demo-content {
+            padding: 2rem;
+            min-height: 450px;
+            display: flex;
+            flex-direction: column;
+        }
+        
+        .demo-tabs {
+            display: flex;
+            border-bottom: 1px solid #e5e7eb;
+            margin-bottom: 1.5rem;
+        }
+        
+        .demo-tab {
+            padding: 0.75rem 1.5rem;
+            cursor: pointer;
+            transition: var(--transition-base);
+            border-bottom: 2px solid transparent;
+            font-weight: 500;
+        }
+        
+        .demo-tab.active {
+            border-bottom: 2px solid var(--primary);
+            color: var(--primary);
+        }
+        
+        .demo-tab:hover:not(.active) {
+            background-color: #f3f4f6;
+        }
+        
+        .demo-pane {
+            display: none;
+        }
+        
+        .demo-pane.active {
+            display: block;
+            animation: fadeIn 0.5s ease;
+        }
+        
+        .text-input-container {
+            display: flex;
+            gap: 1rem;
+            margin-bottom: 1.5rem;
+        }
+        
+        .text-input {
+            flex: 1;
+            padding: 0.75rem;
+            border: 1px solid #e5e7eb;
+            border-radius: 0.25rem;
+            transition: var(--transition-base);
+        }
+        
+        .text-input:focus {
+            outline: none;
+            border-color: var(--primary);
+            box-shadow: 0 0 0 2px rgba(55, 114, 255, 0.2);
+        }
+        
+        .add-text-button {
+            background-color: var(--primary);
+            color: white;
+            border: none;
+            border-radius: 0.25rem;
+            padding: 0.75rem 1.25rem;
+            cursor: pointer;
+            transition: var(--transition-base);
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        
+        .add-text-button:hover {
+            background-color: var(--primary-dark);
+        }
+        
+        .merkle-tree-visualization {
+            flex: 1;
+            position: relative;
+            background-color: #f9fafb;
+            border-radius: 0.5rem;
+            margin-top: 1.5rem;
+            min-height: 300px;
+            overflow: auto;
+            border: 1px dashed #e5e7eb;
+        }
+        
+        .vdf-clock-display {
+            background-color: #f8fafc;
+            padding: 1.5rem;
+            border-radius: 0.5rem;
+            margin-top: 1.5rem;
+            font-family: "SF Mono", "Consolas", monospace;
+            border: 1px solid #e5e7eb;
+        }
+        
+        .clock-title {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            font-weight: 600;
+            margin-bottom: 1rem;
+        }
+        
+        .clock-title i {
+            color: var(--primary);
+        }
+        
+        .clock-tick {
+            display: flex;
+            align-items: center;
+            margin-bottom: 0.75rem;
+            transition: var(--transition-base);
+            padding: 0.5rem;
+            border-radius: 0.25rem;
+        }
+        
+        .clock-tick:hover {
+            background-color: rgba(55, 114, 255, 0.1);
+        }
+        
+        .tick-sequence {
+            font-weight: bold;
+            margin-right: 0.75rem;
+            color: var(--primary);
+        }
+        
+        .tick-value {
+            font-family: monospace;
+            color: var(--gray);
+            letter-spacing: 0.5px;
+        }
+        
+        .tutorial-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(17, 24, 39, 0.8);
+            color: white;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            opacity: 0;
+            visibility: hidden;
+            transition: var(--transition-base);
+            z-index: 10;
+        }
+        
+        .tutorial-overlay.active {
+            opacity: 1;
+            visibility: visible;
+        }
+        
+        .tutorial-content {
+            max-width: 600px;
+            padding: 2rem;
+            background-color: white;
+            color: var(--dark);
+            border-radius: 1rem;
+            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.2);
+        }
+        
+        .tutorial-content h3 {
+            margin-bottom: 1rem;
+            color: var(--primary);
+        }
+        
+        .tutorial-steps {
+            margin-bottom: 1.5rem;
+        }
+        
+        .tutorial-step {
+            display: flex;
+            gap: 1rem;
+            margin-bottom: 1rem;
+            align-items: flex-start;
+        }
+        
+        .tutorial-step-number {
+            background-color: var(--primary);
+            color: white;
+            width: 2rem;
+            height: 2rem;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 600;
+            flex-shrink: 0;
+        }
+        
+        .tutorial-buttons {
+            display: flex;
+            justify-content: flex-end;
+            gap: 1rem;
+        }
+        
+        /* Use Cases */
+        .use-cases {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 2.5rem;
+            margin-top: 3rem;
+        }
+        
+        .use-case-card {
+            border: 1px solid #e5e7eb;
+            border-radius: 1rem;
+            padding: 2.5rem;
+            transition: var(--transition-base);
+            position: relative;
+            overflow: hidden;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+        }
+        
+        .use-case-card:hover {
+            transform: translateY(-10px);
+            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1);
+            border-color: var(--primary);
+        }
+
+        .use-case-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 5px;
+            background: linear-gradient(90deg, var(--primary), var(--secondary));
+            transform: scaleX(0);
+            transform-origin: left;
+            transition: transform 0.5s ease;
+        }
+
+        .use-case-card:hover::before {
+            transform: scaleX(1);
+        }
+        
+        .use-case-icon {
+            font-size: 2.5rem;
+            margin-bottom: 1.5rem;
+            width: 5rem;
+            height: 5rem;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 1rem;
+            background-color: rgba(55, 114, 255, 0.1);
+            color: var(--primary);
+            transition: var(--transition-base);
+        }
+        
+        .use-case-card:hover .use-case-icon {
+            transform: scale(1.1);
+            background-color: rgba(55, 114, 255, 0.2);
+        }
+        
+        .use-case-card h3 {
+            font-size: 1.5rem;
+            margin-bottom: 1rem;
+            color: var(--dark);
+        }
+        
+        .use-case-card p {
+            color: var(--gray);
+            margin-bottom: 1.5rem;
+        }
+        
+        .use-case-card .impact {
+            margin-top: auto;
+            border-top: 1px solid #e5e7eb;
+            padding-top: 1.25rem;
+        }
+        
+        .use-case-card .impact-title {
+            font-weight: 600;
+            margin-bottom: 0.5rem;
+            color: var(--primary);
+        }
+        
+        /* FAQ */
+        .faq-section {
+            background-color: #f3f4f6;
+        }
+        
+        .faq-container {
+            max-width: 800px;
+            margin: 3rem auto 0;
+        }
+        
+        .faq-item {
+            background-color: white;
+            border-radius: 0.5rem;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+            margin-bottom: 1.5rem;
+            overflow: hidden;
+            transition: var(--transition-base);
+        }
+        
+        .faq-item:hover {
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
+        }
+        
+        .faq-question {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 1.5rem;
+            cursor: pointer;
+            font-weight: 600;
+            color: var(--dark);
+            transition: var(--transition-base);
+        }
+        
+        .faq-question:hover {
+            color: var(--primary);
+        }
+        
+        .faq-toggle {
+            color: var(--primary);
+            font-size: 1.25rem;
+            transition: var(--transition-base);
+        }
+        
+        .faq-item.active .faq-toggle {
+            transform: rotate(180deg);
+        }
+        
+        .faq-answer {
+            padding: 0 1.5rem;
+            max-height: 0;
+            overflow: hidden;
+            transition: var(--transition-base);
+            color: var(--gray);
+        }
+        
+        .faq-item.active .faq-answer {
+            padding: 0 1.5rem 1.5rem;
+            max-height: 1000px;
+            transition: max-height 0.5s ease, padding 0.2s ease;
+        }
+        
+        /* Call to Action */
+        .action-section {
+            background: linear-gradient(135deg, var(--primary) 0%, var(--primary-dark) 100%);
+            color: white;
+            text-align: center;
+            padding: 5rem 0;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .action-bg {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            opacity: 0.1;
+            pointer-events: none;
+        }
+        
+        .action-content {
+            position: relative;
+            z-index: 2;
+        }
+        
+        .action-section h2 {
+            font-size: 2.5rem;
+            margin-bottom: 1.5rem;
+            position: relative;
+        }
+        
+        .action-section p {
+            max-width: 700px;
+            margin: 0 auto 2.5rem;
+            font-size: 1.25rem;
+            opacity: 0.9;
+            position: relative;
+        }
+
+        .cta-buttons {
+            display: flex;
+            gap: 1.5rem;
+            justify-content: center;
+            position: relative;
+        }
+        
+        /* Newsletter */
+        .newsletter-section {
+            padding: 4rem 0;
+            background-color: #f3f4f6;
+            text-align: center;
+        }
+        
+        .newsletter-container {
+            max-width: 600px;
+            margin: 0 auto;
+        }
+        
+        .newsletter-container h3 {
+            font-size: 1.75rem;
+            margin-bottom: 1rem;
+            color: var(--dark);
+        }
+        
+        .newsletter-container p {
+            color: var(--gray);
+            margin-bottom: 2rem;
+        }
+        
+        .newsletter-form {
+            display: flex;
+            gap: 1rem;
+            margin: 0 auto;
+            max-width: 500px;
+        }
+        
+        .newsletter-input {
+            flex: 1;
+            padding: 0.75rem 1rem;
+            border: 1px solid #e5e7eb;
+            border-radius: 0.375rem;
+            transition: var(--transition-base);
+        }
+        
+        .newsletter-input:focus {
+            outline: none;
+            border-color: var(--primary);
+            box-shadow: 0 0 0 2px rgba(55, 114, 255, 0.2);
+        }
+        
+        /* Footer */
+        footer {
+            background-color: var(--dark);
+            color: white;
+            padding: 4rem 0 2rem;
+        }
+        
+        .footer-content {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 2rem;
+        }
+        
+        .footer-column h3 {
+            font-size: 1.25rem;
+            margin-bottom: 1.5rem;
+            color: var(--secondary);
+            position: relative;
+            display: inline-block;
+        }
+        
+        .footer-column h3::after {
+            content: '';
+            position: absolute;
+            left: 0;
+            bottom: -6px;
+            width: 30px;
+            height: 2px;
+            background-color: var(--secondary);
+        }
+        
+        .footer-links {
+            list-style: none;
+        }
+        
+        .footer-links li {
+            margin-bottom: 0.75rem;
+        }
+        
+        .footer-links a {
+            color: #d1d5db;
+            text-decoration: none;
+            transition: color 0.2s;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        
+        .footer-links a:hover {
+            color: white;
+        }
+        
+        .footer-links a i {
+            font-size: 0.75rem;
+            opacity: 0;
+            transition: var(--transition-base);
+        }
+        
+        .footer-links a:hover i {
+            opacity: 1;
+            transform: translateX(4px);
+        }
+        
+        .footer-social {
+            display: flex;
+            gap: 1rem;
+            margin-top: 1rem;
+        }
+        
+        .social-icon {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 2.5rem;
+            height: 2.5rem;
+            border-radius: 50%;
+            background-color: rgba(255, 255, 255, 0.1);
+            color: white;
+            text-decoration: none;
+            transition: var(--transition-base);
+        }
+        
+        .social-icon:hover {
+            background-color: var(--primary);
+            transform: translateY(-3px);
+        }
+        
+        .copyright {
+            text-align: center;
+            padding-top: 2rem;
+            margin-top: 3rem;
+            border-top: 1px solid #374151;
+            color: #9ca3af;
+            font-size: 0.875rem;
+        }
+        
+        .copyright a {
+            color: var(--primary-light);
+            text-decoration: none;
+            transition: var(--transition-base);
+        }
+        
+        .copyright a:hover {
+            color: white;
+        }
+        
+        /* Tooltip */
+        .tooltip {
+            position: relative;
+            display: inline-block;
+            cursor: help;
+            border-bottom: 1px dotted #ccc;
+        }
+        
+        .tooltip .tooltip-text {
+            visibility: hidden;
+            width: 300px;
+            background-color: var(--dark);
+            color: white;
+            text-align: left;
+            border-radius: 6px;
+            padding: 10px;
+            position: absolute;
+            z-index: 1;
+            bottom: 125%;
+            left: 50%;
+            transform: translateX(-50%);
+            opacity: 0;
+            transition: opacity 0.3s;
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.2);
+            font-weight: normal;
+            font-size: 0.875rem;
+            line-height: 1.5;
+            pointer-events: none;
+        }
+        
+        .tooltip .tooltip-text::after {
+            content: "";
+            position: absolute;
+            top: 100%;
+            left: 50%;
+            margin-left: -5px;
+            border-width: 5px;
+            border-style: solid;
+            border-color: var(--dark) transparent transparent transparent;
+        }
+        
+        .tooltip:hover .tooltip-text {
+            visibility: visible;
+            opacity: 0.95;
+        }
+        
+        /* Animations */
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+        
+        @keyframes fadeUp {
+            from { 
+                opacity: 0;
+                transform: translateY(20px);
+            }
+            to { 
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+        
+        @keyframes fadeInRight {
+            from { 
+                opacity: 0;
+                transform: translateX(-20px);
+            }
+            to { 
+                opacity: 1;
+                transform: translateX(0);
+            }
+        }
+        
+        /* Modal */
+        .modal {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.8);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 999;
+            opacity: 0;
+            visibility: hidden;
+            transition: var(--transition-base);
+        }
+        
+        .modal.active {
+            opacity: 1;
+            visibility: visible;
+        }
+        
+        .modal-content {
+            background-color: white;
+            border-radius: 1rem;
+            width: 90%;
+            max-width: 800px;
+            max-height: 90vh;
+            overflow: auto;
+            padding: 2rem;
+            position: relative;
+            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.2);
+            transform: scale(0.9);
+            transition: transform 0.3s ease;
+        }
+        
+        .modal.active .modal-content {
+            transform: scale(1);
+        }
+        
+        .modal-close {
+            position: absolute;
+            top: 1rem;
+            right: 1rem;
+            background: none;
+            border: none;
+            font-size: 1.5rem;
+            color: var(--gray);
+            cursor: pointer;
+            transition: var(--transition-base);
+        }
+        
+        .modal-close:hover {
+            color: var(--danger);
+            transform: rotate(90deg);
+        }
+        
+        /* Glossary */
+        .glossary-term {
+            font-weight: 500;
+            color: var(--primary);
+            border-bottom: 1px dotted;
+            cursor: help;
+            position: relative;
+        }
+        
+        /* Breadcrumbs */
+        .breadcrumbs {
+            margin-bottom: 2rem;
+            display: flex;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+            font-size: 0.875rem;
+        }
+        
+        .breadcrumbs a {
+            color: var(--gray);
+            text-decoration: none;
+            transition: var(--transition-base);
+            display: flex;
+            align-items: center;
+        }
+        
+        .breadcrumbs a:hover {
+            color: var(--primary);
+        }
+        
+        .breadcrumb-separator {
+            color: var(--gray-light);
+            margin: 0 0.25rem;
+        }
+        
+        .breadcrumb-current {
+            color: var(--primary);
+            font-weight: 500;
+        }
+        
+        /* Back to top button */
+        .back-to-top {
+            position: fixed;
+            bottom: 2rem;
+            right: 2rem;
+            width: 3rem;
+            height: 3rem;
+            background-color: var(--primary);
+            color: white;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            text-decoration: none;
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.2);
+            opacity: 0;
+            visibility: hidden;
+            transition: var(--transition-base);
+            z-index: 99;
+        }
+        
+        .back-to-top.visible {
+            opacity: 1;
+            visibility: visible;
+        }
+        
+        .back-to-top:hover {
+            background-color: var(--primary-dark);
+            transform: translateY(-5px);
+        }
+        
+        /* Responsive adjustments */
+        @media (max-width: 1024px) {
+            :root {
+                --section-spacing: 5rem;
+            }
+            
+            .hero h1 {
+                font-size: 3rem;
+            }
+            
+            .section-title h2 {
+                font-size: 2.25rem;
+            }
+            
+            .comparison, .problem-solution {
+                gap: 1.5rem;
+            }
+            
+            .step-number {
+                flex: 0 0 80px;
+                width: 80px;
+                height: 80px;
+                font-size: 2rem;
+                margin: 0 1.5rem;
+            }
+            
+            .step-content {
+                max-width: calc(100% - 170px);
+            }
+        }
+        
+        @media (max-width: 768px) {
+            :root {
+                --section-spacing: 4rem;
+            }
+            
+            .hero h1 {
+                font-size: 2.5rem;
+            }
+            
+            .hero p {
+                font-size: 1.125rem;
+            }
+            
+            .section-title h2 {
+                font-size: 2rem;
+            }
+            
+            .section-title p {
+                font-size: 1.125rem;
+            }
+            
+            .nav-links {
+                display: none;
+            }
+            
+            .mobile-menu-button {
+                display: block;
+            }
+            
+            .mobile-menu {
+                position: fixed;
+                top: 0;
+                right: 0;
+                bottom: 0;
+                width: 80%;
+                max-width: 300px;
+                background-color: var(--dark);
+                padding: 6rem 2rem 2rem;
+                transform: translateX(100%);
+                transition: transform 0.3s ease;
+                z-index: 99;
+                box-shadow: 0 0 20px rgba(0, 0, 0, 0.2);
+            }
+            
+            .mobile-menu.active {
+                transform: translateX(0);
+            }
+            
+            .mobile-menu a {
+                display: block;
+                padding: 1rem 0;
+                color: white;
+                text-decoration: none;
+                font-weight: 500;
+                border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+            }
+            
+            .mobile-menu a:last-child {
+                border-bottom: none;
+            }
+            
+            .mobile-menu-close {
+                position: absolute;
+                top: 1.5rem;
+                right: 1.5rem;
+                background: none;
+                border: none;
+                color: white;
+                font-size: 1.5rem;
+                cursor: pointer;
+            }
+            
+            .comparison, .problem-solution {
+                grid-template-columns: 1fr;
+            }
+            
+            .step {
+                flex-direction: column !important;
+                text-align: center;
+                align-items: center;
+            }
+            
+            .step-container::before {
+                left: 50%;
+            }
+            
+            .step-number {
+                margin: 0 0 1.5rem 0;
+            }
+            
+            .step-content {
+                max-width: 100%;
+            }
+            
+            .hero-buttons {
+                flex-direction: column;
+                align-items: center;
+                gap: 1rem;
+            }
+            
+            .btn-group {
+                flex-direction: column;
+                align-items: center;
+            }
+            
+            .newsletter-form {
+                flex-direction: column;
+            }
+            
+            .cta-buttons {
+                flex-direction: column;
+                align-items: center;
+            }
+        }
+        
+        @media (max-width: 480px) {
+            .hero h1 {
+                font-size: 2rem;
+            }
+            
+            .section-title h2 {
+                font-size: 1.75rem;
+            }
+            
+            .feature-card, .use-case-card {
+                padding: 1.5rem;
+            }
+            
+            .comparison-column, .problem-column, .solution-column {
+                padding: 1.5rem;
+            }
+            
+            .step-number {
+                width: 70px;
+                height: 70px;
+                font-size: 1.75rem;
+            }
+            
+            .demo-content {
+                padding: 1.5rem 1rem;
+            }
+            
+            .demo-tab {
+                padding: 0.5rem 1rem;
+                font-size: 0.875rem;
+            }
+        }
+    </style>
+</head>
+<body>
+    <header id="header">
+        <div class="container header-content">
+            <a href="#" class="logo">Bit<span class="highlight">Quill</span></a>
+            
+            <nav class="nav-links">
+                <a href="#why">Why BitQuill</a>
+                <a href="#how-it-works">How It Works</a>
+                <a href="#features">Features</a>
+                <a href="#interactive">Demo</a>
+                <a href="#use-cases">Use Cases</a>
+                <a href="https://github.com/ciphernom/BitQuill" class="btn btn-secondary">GitHub <i class="fas fa-external-link-alt"></i></a>
+            </nav>
+            
+            <button class="mobile-menu-button" aria-label="Open menu">
+                <i class="fas fa-bars"></i>
+            </button>
+        </div>
+    </header>
+
+    <div class="mobile-menu">
+        <button class="mobile-menu-close" aria-label="Close menu">
+            <i class="fas fa-times"></i>
+        </button>
+        <a href="#why">Why BitQuill</a>
+        <a href="#how-it-works">How It Works</a>
+        <a href="#features">Features</a>
+        <a href="#interactive">Demo</a>
+        <a href="#use-cases">Use Cases</a>
+        <a href="https://github.com/ciphernom/BitQuill" class="btn btn-secondary">GitHub</a>
+    </div>
+
+    <section class="hero" id="home">
+        <div class="hero-particles" id="particles-js"></div>
+        <div class="container">
+            <div class="hero-content">
+                <h1>Preserving Human Authorship<br>in an AI-Generated World</h1>
+                <p>BitQuill provides cryptographic proof of human effort through verifiable time commitments, creating tamper-evident records that distinguish genuine human work from instant AI generation.</p>
+                <div class="hero-buttons">
+                    <a href="#interactive" class="btn btn-secondary btn-lg">Try Interactive Demo <i class="fas fa-play-circle"></i></a>
+                    <a href="https://github.com/ciphernom/BitQuill" class="btn btn-outline btn-lg">Explore on GitHub <i class="fab fa-github"></i></a>
+                </div>
+            </div>
+            
+            <div class="hero-video">
+                <img src="https://raw.githubusercontent.com/ciphernom/BitQuill/refs/heads/main/screenshots/Screenshot%20from%202025-04-28%2013-16-29.png" alt="BitQuill Editor Interface">
+                <div class="play-button" id="demo-video">
+                    <i class="fas fa-play"></i>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section id="why" class="why-section">
+        <div class="container">
+            <div class="section-title">
+                <h2>The Challenge of Digital Authenticity</h2>
+                <p>In a world where AI can generate convincing content in seconds, distinguishing human authorship from machine generation has become critically important yet increasingly difficult.</p>
+            </div>
+
+            <div class="comparison">
+                <div class="comparison-column">
+                    <div class="comparison-header">
+                        <div class="comparison-icon ai-icon">
+                            <i class="fas fa-robot"></i>
+                        </div>
+                        <h3>AI-Generated Content</h3>
+                    </div>
+                    <div class="comparison-timeline ai-timeline">
+                        <div class="timeline-scale">
+                            <span class="timeline-hour">0h</span>
+                            <span class="timeline-hour">1h</span>
+                            <span class="timeline-hour">2h</span>
+                            <span class="timeline-hour">3h</span>
+                        </div>
+                        <div class="timeline-events">
+                            <div class="timeline-event" style="top: 10px; --i: 1;">
+                                <strong>Seconds:</strong> Document outline generated
+                            </div>
+                            <div class="timeline-event" style="top: 60px; --i: 2;">
+                                <strong>Seconds:</strong> First draft complete
+                            </div>
+                            <div class="timeline-event" style="top: 110px; --i: 3;">
+                                <strong>Seconds:</strong> Citations inserted
+                            </div>
+                            <div class="timeline-event" style="top: 160px; --i: 4;">
+                                <strong>Minutes:</strong> Revisions completed
+                            </div>
+                            <div class="timeline-event" style="top: 210px; --i: 5;">
+                                <strong>Minutes:</strong> Final document with formatting
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="comparison-column">
+                    <div class="comparison-header">
+                        <div class="comparison-icon human-icon">
+                            <i class="fas fa-user"></i>
+                        </div>
+                        <h3>Human-Authored Content</h3>
+                    </div>
+                    <div class="comparison-timeline human-timeline">
+                        <div class="timeline-scale">
+                            <span class="timeline-hour">0h</span>
+                            <span class="timeline-hour">1h</span>
+                            <span class="timeline-hour">2h</span>
+                            <span class="timeline-hour">3h</span>
+                        </div>
+                        <div class="timeline-events">
+                            <div class="timeline-event" style="top: 20px; --i: 1;">
+                                <strong>30-60 min:</strong> Research and planning
+                            </div>
+                            <div class="timeline-event" style="top: 80px; --i: 2;">
+                                <strong>60-90 min:</strong> Writing first draft
+                            </div>
+                            <div class="timeline-event" style="top: 140px; --i: 3;">
+                                <strong>30-45 min:</strong> Reviewing and editing
+                            </div>
+                            <div class="timeline-event" style="top: 200px; --i: 4;">
+                                <strong>15-30 min:</strong> Formatting and finalizing
+                            </div>
+                            <div class="timeline-event" style="top: 260px; --i: 5;">
+                                <strong>15-20 min:</strong> Final proofreading
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="problem-solution">
+                <div class="problem-column">
+                    <div class="column-header">
+                        <div class="comparison-icon ai-icon">
+                            <i class="fas fa-exclamation-triangle"></i>
+                        </div>
+                        <h3 class="column-title problem-title">The Problem</h3>
+                    </div>
+                    <ul class="problem-list">
+                        <li><strong>Indistinguishable Output</strong> 
+                            AI now creates content that's visually identical to human work, making final outputs impossible to tell apart.</li>
+                        <li><strong>No Temporal Evidence</strong> 
+                            Traditional digital documents contain no verifiable record of the time invested in their creation.</li>
+                        <li><strong>Trust Erosion</strong> 
+                            Legal documents, academic papers, and creative works lose credibility without proof of human authorship.</li>
+                        <li><strong>Academic Integrity Crisis</strong> 
+                            Educational institutions struggle to verify if work represents genuine student effort or AI generation.</li>
+                        <li><strong>Value Devaluation</strong> 
+                            Human intellectual effort loses its distinct value when indistinguishable from instant AI output.</li>
+                    </ul>
+                </div>
+
+                <div class="solution-column">
+                    <div class="column-header">
+                        <div class="comparison-icon human-icon">
+                            <i class="fas fa-check-circle"></i>
+                        </div>
+                        <h3 class="column-title solution-title">The BitQuill Solution</h3>
+                    </div>
+                    <ul class="solution-list">
+                        <li><strong>Verifiable Delay Functions</strong> 
+                            Cryptographic proof that real time has elapsed during document creation.</li>
+                        <li><strong>Merkle Tree Authentication</strong> 
+                            Tamper-evident structure making any retrospective manipulation detectable.</li>
+                        <li><strong>Paragraph-Level Binding</strong> 
+                            Each section of content cryptographically connected to VDF time proofs.</li>
+                        <li><strong>Writing Pattern Analysis</strong> 
+                            Statistical verification of natural human writing rhythms.</li>
+                        <li><strong>Self-Contained Verification</strong> 
+                            Complete cryptographic validation without relying on third parties.</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section class="how-it-works" id="how-it-works">
+        <div class="container">
+            <div class="section-title">
+                <h2>How BitQuill Works</h2>
+                <p>A revolutionary approach that restores the "physical properties" of authentic creation to digital documents</p>
+            </div>
+            
+            <div class="step-container">
+                <div class="step" id="step1">
+                    <div class="step-number">1</div>
+                    <div class="step-content">
+                        <h3 class="step-title"><i class="fas fa-clock"></i> VDF Clock</h3>
+                        <p class="step-description">A cryptographic timer produces sequential "ticks" that require real-world time to compute. These operations cannot be parallelized or accelerated beyond physical time constraints - even with specialized hardware.</p>
+                        <div class="tooltip">
+                            <span>How it works technically</span>
+                            <span class="tooltip-text">Verifiable Delay Functions (VDFs) are cryptographic constructions that require a specified amount of sequential computation. BitQuill uses Wesolowski's construction based on time-lock puzzles in RSA groups.</span>
+                        </div>
+                        <a href="#" class="learn-more">Learn more about VDFs <i class="fas fa-arrow-right"></i></a>
+                    </div>
+                </div>
+                
+                <div class="step" id="step2">
+                    <div class="step-number">2</div>
+                    <div class="step-content">
+                        <h3 class="step-title"><i class="fas fa-paragraph"></i> Paragraph Binding</h3>
+                        <p class="step-description">As you write, each paragraph is cryptographically bound to the VDF clock's current tick, creating a verifiable record of the document's progressive creation over real time.</p>
+                        <div class="tooltip">
+                            <span>How it works technically</span>
+                            <span class="tooltip-text">Each paragraph's content hash is combined with the VDF output to create a commitment. This commitment scheme ensures the paragraph was created after the VDF tick was generated.</span>
+                        </div>
+                        <a href="#" class="learn-more">Learn more about cryptographic binding <i class="fas fa-arrow-right"></i></a>
+                    </div>
+                </div>
+                
+                <div class="step" id="step3">
+                    <div class="step-number">3</div>
+                    <div class="step-content">
+                        <h3 class="step-title"><i class="fas fa-sitemap"></i> Merkle Tree Construction</h3>
+                        <p class="step-description">Document states are organized in a tamper-evident Merkle tree, where each node depends cryptographically on previous nodes, making retrospective manipulation immediately detectable.</p>
+                        <div class="tooltip">
+                            <span>How it works technically</span>
+                            <span class="tooltip-text">Merkle trees are cryptographic data structures where each parent node contains a hash of its children. This creates a tamper-evident history where changing any leaf requires recalculating the entire path to the root.</span>
+                        </div>
+                        <a href="#" class="learn-more">Learn more about Merkle trees <i class="fas fa-arrow-right"></i></a>
+                    </div>
+                </div>
+                
+                <div class="step" id="step4">
+                    <div class="step-number">4</div>
+                    <div class="step-content">
+                        <h3 class="step-title"><i class="fas fa-shield-alt"></i> Multi-level Verification</h3>
+                        <p class="step-description">The system offers multiple verification levels - from basic integrity checks to thorough cryptographic verification and forensic analysis of writing patterns.</p>
+                        <div class="tooltip">
+                            <span>How it works technically</span>
+                            <span class="tooltip-text">Verification can include: checking Merkle tree structure, validating VDF proofs, confirming commitment bindings, and analyzing the statistical properties of writing intervals.</span>
+                        </div>
+                        <a href="#" class="learn-more">Learn more about verification <i class="fas fa-arrow-right"></i></a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section id="for-non-techies" class="for-non-techies-section">
+        <div class="container">
+            <div class="section-title">
+                <h2>BitQuill for Non-Techies</h2>
+                <p>Understanding the value without the technical jargon</p>
+            </div>
+            
+            <div class="problem-solution">
+                <div class="problem-column">
+                    <h3><i class="fas fa-question-circle"></i> What's the Problem?</h3>
+                    <p>Imagine you've spent hours crafting a document — a legal brief, academic paper, creative manuscript, or important work project. Now imagine that anyone could claim they wrote it in seconds using AI. How would you prove your authentic effort?</p>
+                    <p>That's the challenge we're facing today. With AI tools, it's becoming impossible to distinguish human-created content from machine-generated content just by looking at the final result.</p>
+                </div>
+
+                <div class="solution-column">
+                    <h3><i class="fas fa-lightbulb"></i> How BitQuill Helps</h3>
+                    <p>BitQuill is like a digital notary that timestamps and authenticates your work as you write. It creates a tamper-proof record showing that your document was created progressively over time — the way humans naturally work — rather than generated all at once.</p>
+                    <p>Think of it as adding physical "proof of effort" properties to digital documents, allowing you to demonstrate your authentic human contribution.</p>
+                </div>
+            </div>
+            
+            <div class="analogy-section">
+                <h3 class="text-center mb-4">Simple Analogies</h3>
+                
+                <div class="features">
+                    <div class="feature-card">
+                        <div class="feature-icon">
+                            <div class="feature-icon-bg"></div>
+                            <i class="fas fa-fingerprint"></i>
+                        </div>
+                        <h3>Like a Fingerprint</h3>
+                        <p>BitQuill creates a unique "fingerprint" of your writing process that's impossible to forge after the fact. Just as each person has a unique fingerprint, each authentic document has a unique creation pattern.</p>
+                    </div>
+                    
+                    <div class="feature-card">
+                        <div class="feature-icon">
+                            <div class="feature-icon-bg"></div>
+                            <i class="fas fa-link"></i>
+                        </div>
+                        <h3>Like a Chain of Evidence</h3>
+                        <p>Similar to how police maintain a chain of evidence, BitQuill maintains a tamper-evident chain of your document's creation history, making it impossible to alter without detection.</p>
+                    </div>
+                    
+                    <div class="feature-card">
+                        <div class="feature-icon">
+                            <div class="feature-icon-bg"></div>
+                            <i class="fas fa-hourglass-half"></i>
+                        </div>
+                        <h3>Like a Time Capsule</h3>
+                        <p>BitQuill is like creating a series of time capsules as you write. Each paragraph is sealed with a cryptographic timestamp that cannot be backdated, proving when each part was written.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section id="interactive" class="interactive-section">
+        <div class="interactive-background" id="interactive-bg"></div>
+        <div class="container">
+            <div class="section-title">
+                <h2>Interactive Demonstration</h2>
+                <p>See how BitQuill creates a tamper-evident record of document creation with verifiable time proofs</p>
+            </div>
+
+            <div class="demo-container">
+                <div class="demo-header">
+                    <div class="demo-title">
+                        <i class="fas fa-code-branch"></i> Merkle Tree &amp; VDF Demonstration
+                    </div>
+                    <div class="demo-controls">
+                        <button class="demo-button" id="tutorial-btn">
+                            <i class="fas fa-question-circle"></i> Tutorial
+                        </button>
+                        <button class="demo-button" id="restart-demo">
+                            <i class="fas fa-redo-alt"></i> Restart
+                        </button>
+                        <button class="demo-button" id="verify-demo">
+                            <i class="fas fa-shield-alt"></i> Verify
+                        </button>
+                    </div>
+                </div>
+                <div class="demo-content">
+                    <div class="demo-tabs">
+                        <div class="demo-tab active" data-tab="basic">Basic Demo</div>
+                        <div class="demo-tab" data-tab="advanced">Advanced View</div>
+                        <div class="demo-tab" data-tab="verification">Verification</div>
+                    </div>
+                    
+                    <div class="demo-pane active" id="basic-pane">
+                        <div class="text-input-container">
+                            <input type="text" id="paragraph-input" class="text-input" placeholder="Type a paragraph and click Add to see it added to the Merkle tree...">
+                            <button id="add-paragraph" class="add-text-button">
+                                <i class="fas fa-plus"></i> Add Paragraph
+                            </button>
+                        </div>
+                        
+                        <div class="merkle-tree-visualization" id="merkle-tree-viz">
+                            <!-- Tree will be drawn here -->
+                        </div>
+                        
+                        <div class="vdf-clock-display" id="vdf-clock">
+                            <div class="clock-title">
+                                <i class="fas fa-clock"></i> VDF Clock Ticks
+                                <div class="tooltip">
+                                    <i class="fas fa-info-circle"></i>
+                                    <span class="tooltip-text">Verifiable Delay Functions create sequential proofs that a minimum amount of time has elapsed. Each paragraph is bound to a specific VDF tick, creating a verifiable time record.</span>
+                                </div>
+                            </div>
+                            <div id="clock-ticks">
+                                <!-- VDF ticks will be displayed here -->
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="demo-pane" id="advanced-pane">
+                        <h3>Advanced Merkle Tree Visualization</h3>
+                        <p>This view shows the detailed cryptographic structure of the Merkle tree and how each paragraph is bound to the VDF clock ticks.</p>
+                        
+                        <!-- Advanced visualization will be rendered here -->
+                        <div id="advanced-visualization" class="merkle-tree-visualization">
+                            <!-- Advanced visualization will be rendered here -->
+                        </div>
+                    </div>
+                    
+                    <div class="demo-pane" id="verification-pane">
+                        <h3>Document Verification</h3>
+                        <p>Select verification options and check the integrity of your document's history.</p>
+                        
+                        <div class="verification-options">
+                            <div class="verification-option">
+                                <input type="radio" id="verify-basic" name="verify-level" value="basic" checked>
+                                <label for="verify-basic">Basic Verification</label>
+                                <div class="tooltip">
+                                    <i class="fas fa-info-circle"></i>
+                                    <span class="tooltip-text">Performs quick integrity checks on document structure and paragraph links.</span>
+                                </div>
+                            </div>
+                            
+                            <div class="verification-option">
+                                <input type="radio" id="verify-standard" name="verify-level" value="standard">
+                                <label for="verify-standard">Standard Verification</label>
+                                <div class="tooltip">
+                                    <i class="fas fa-info-circle"></i>
+                                    <span class="tooltip-text">Performs thorough checks on document integrity, Merkle tree structure, and VDF binding.</span>
+                                </div>
+                            </div>
+                            
+                            <div class="verification-option">
+                                <input type="radio" id="verify-forensic" name="verify-level" value="forensic">
+                                <label for="verify-forensic">Forensic Analysis</label>
+                                <div class="tooltip">
+                                    <i class="fas fa-info-circle"></i>
+                                    <span class="tooltip-text">Performs exhaustive verification including writing pattern analysis, timestamp consistency, and statistical anomaly detection.</span>
+                                </div>
+                            </div>
+                            
+                            <button id="run-verification" class="btn btn-primary">
+                                <i class="fas fa-check-circle"></i> Run Verification
+                            </button>
+                        </div>
+                        
+                        <div id="verification-results" class="verification-results">
+                            <!-- Verification results will be displayed here -->
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="tutorial-overlay" id="tutorial-overlay">
+                    <div class="tutorial-content">
+                        <h3><i class="fas fa-graduation-cap"></i> How to Use This Demo</h3>
+                        
+                        <div class="tutorial-steps">
+                            <div class="tutorial-step">
+                                <div class="tutorial-step-number">1</div>
+                                <div>Type some text in the input field and click "Add Paragraph" to create document content.</div>
+                            </div>
+                            
+                            <div class="tutorial-step">
+                                <div class="tutorial-step-number">2</div>
+                                <div>Watch as the Merkle tree grows with each paragraph addition, showing the document's structure.</div>
+                            </div>
+                            
+                            <div class="tutorial-step">
+                                <div class="tutorial-step-number">3</div>
+                                <div>Notice the VDF Clock generating ticks in real-time, representing elapsed time.</div>
+                            </div>
+                            
+                            <div class="tutorial-step">
+                                <div class="tutorial-step-number">4</div>
+                                <div>Each paragraph is cryptographically bound to a VDF tick, proving it was created at that time.</div>
+                            </div>
+                            
+                            <div class="tutorial-step">
+                                <div class="tutorial-step-number">5</div>
+                                <div>Click "Verify" to check the document's integrity and detect any tampering.</div>
+                            </div>
+                        </div>
+                        
+                        <div class="tutorial-buttons">
+                            <button class="btn" id="tutorial-close">Got it, let me try!</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section id="features">
+        <div class="container">
+            <div class="section-title">
+                <h2>Key Features</h2>
+                <p>BitQuill creates an unforgeable record of human document creation through advanced cryptographic techniques</p>
+            </div>
+            <div class="features">
+                <div class="feature-card" data-feature="1">
+                    <div class="feature-icon">
+                        <div class="feature-icon-bg"></div>
+                        <i class="fas fa-lock"></i>
+                    </div>
+                    <h3>Tamper-Evident Records</h3>
+                    <p>Any attempt to modify document history breaks cryptographic chains, making manipulation immediately detectable.</p>
+                    <button class="expand-button" data-feature="1">
+                        <span class="expand-text">Learn more <i class="fas fa-chevron-down"></i></span>
+                        <span class="collapse-text">Show less <i class="fas fa-chevron-up"></i></span>
+                    </button>
+                    <div class="feature-details">
+                        <p>Unlike conventional version control systems where history can be rewritten, BitQuill's tamper-evidence comes from mathematical properties rather than trust. The Merkle tree structure ensures integrity of the entire historical record.</p>
+                    </div>
+                </div>
+                <div class="feature-card" data-feature="2">
+                    <div class="feature-icon">
+                        <div class="feature-icon-bg"></div>
+                        <i class="fas fa-hourglass-half"></i>
+                    </div>
+                    <h3>Time-Bound Verification</h3>
+                    <p>Mathematical proof that document creation required real-world time investment.</p>
+                    <button class="expand-button" data-feature="2">
+                        <span class="expand-text">Learn more <i class="fas fa-chevron-down"></i></span>
+                        <span class="collapse-text">Show less <i class="fas fa-chevron-up"></i></span>
+                    </button>
+                    <div class="feature-details">
+                        <p>Verifiable Delay Functions create sequential proofs that a minimum amount of time has elapsed. These functions cannot be parallelized, ensuring that even with advanced computing resources, document creation represents real-world time investment.</p>
+                    </div>
+                </div>
+                <div class="feature-card" data-feature="3">
+                    <div class="feature-icon">
+                        <div class="feature-icon-bg"></div>
+                        <i class="fas fa-shield-alt"></i>
+                    </div>
+                    <h3>Adaptive Security</h3>
+                    <p>Maintains consistent security across different hardware environments.</p>
+                    <button class="expand-button" data-feature="3">
+                        <span class="expand-text">Learn more <i class="fas fa-chevron-down"></i></span>
+                        <span class="collapse-text">Show less <i class="fas fa-chevron-up"></i></span>
+                    </button>
+                    <div class="feature-details">
+                        <p>BitQuill automatically adjusts VDF difficulty parameters to maintain consistent timing relationships regardless of the underlying hardware. This ensures security remains effective as technology evolves.</p>
+                    </div>
+                </div>
+                <div class="feature-card" data-feature="4">
+                    <div class="feature-icon">
+                        <div class="feature-icon-bg"></div>
+                        <i class="fas fa-chart-line"></i>
+                    </div>
+                    <h3>Writing Pattern Analysis</h3>
+                    <p>Statistical verification of writing patterns typical of human authorship.</p>
+                    <button class="expand-button" data-feature="4">
+                        <span class="expand-text">Learn more <i class="fas fa-chevron-down"></i></span>
+                        <span class="collapse-text">Show less <i class="fas fa-chevron-up"></i></span>
+                    </button>
+                    <div class="feature-details">
+                        <p>Natural human writing shows characteristic patterns: pauses between bursts of activity, variation in editing rates, and natural rhythms. BitQuill captures and analyzes these patterns to differentiate human authorship from machine generation.</p>
+                    </div>
+                </div>
+                <div class="feature-card" data-feature="5">
+                    <div class="feature-icon">
+                        <div class="feature-icon-bg"></div>
+                        <i class="fas fa-user-shield"></i>
+                    </div>
+                    <h3>Trustless Verification</h3>
+                    <p>No reliance on centralized authorities or external services.</p>
+                    <button class="expand-button" data-feature="5">
+                        <span class="expand-text">Learn more <i class="fas fa-chevron-down"></i></span>
+                        <span class="collapse-text">Show less <i class="fas fa-chevron-up"></i></span>
+                    </button>
+                    <div class="feature-details">
+                        <p>Unlike systems that rely on timestamp authorities or blockchain networks, BitQuill provides completely local verification without requiring internet connectivity or trust in external services.</p>
+                    </div>
+                </div>
+                <div class="feature-card" data-feature="6">
+                    <div class="feature-icon">
+                        <div class="feature-icon-bg"></div>
+                        <i class="fas fa-file-export"></i>
+                    </div>
+                    <h3>Exportable Proofs</h3>
+                    <p>Share compact verification data that others can independently validate.</p>
+                    <button class="expand-button" data-feature="6">
+                        <span class="expand-text">Learn more <i class="fas fa-chevron-down"></i></span>
+                        <span class="collapse-text">Show less <i class="fas fa-chevron-up"></i></span>
+                    </button>
+                    <div class="feature-details">
+                        <p>BitQuill enables authors to share cryptographically secure proof files alongside their documents. These proofs allow others to verify the document's creation timeline without requiring the full historical record.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section id="use-cases">
+        <div class="container">
+            <div class="section-title">
+                <h2>Critical Applications</h2>
+                <p>BitQuill addresses verification needs across multiple domains where human authorship matters</p>
+            </div>
+            <div class="use-cases">
+                <div class="use-case-card">
+                    <div class="use-case-icon">
+                        <i class="fas fa-graduation-cap"></i>
+                    </div>
+                    <h3>Academic & Scientific Integrity</h3>
+                    <p>As AI-generated papers become increasingly common, BitQuill provides irrefutable proof that research papers, theses, and scientific documentation represent genuine human scholarship rather than machine-generated content.</p>
+                    <div class="impact">
+                        <div class="impact-title">Impact:</div>
+                        <p>Universities can verify student work authenticity, journals can validate authorship claims, and the scientific community can maintain trust in published findings.</p>
+                    </div>
+                </div>
+                <div class="use-case-card">
+                    <div class="use-case-icon">
+                        <i class="fas fa-balance-scale"></i>
+                    </div>
+                    <h3>Legal Document Verification</h3>
+                    <p>Legal contracts, briefs, and court filings derive their authority partly from careful human consideration and drafting. BitQuill enables verification that these documents underwent proper review and development rather than instantaneous AI generation.</p>
+                    <div class="impact">
+                        <div class="impact-title">Impact:</div>
+                        <p>Courts can verify attorney work product, clients can validate billable hours, and legal systems can maintain the integrity of their documentation processes.</p>
+                    </div>
+                </div>
+                <div class="use-case-card">
+                    <div class="use-case-icon">
+                        <i class="fas fa-book"></i>
+                    </div>
+                    <h3>Creative Work Authentication</h3>
+                    <p>For literary manuscripts, screenplays, and other creative works, BitQuill provides evidence of the natural evolution through drafts and revisions that characterizes human creativity, establishing both authorship and creation timelines.</p>
+                    <div class="impact">
+                        <div class="impact-title">Impact:</div>
+                        <p>Copyright disputes can be resolved with evidence of creative process, publishers can verify manuscript authenticity, and creators can prove their authorship claims.</p>
+                    </div>
+                </div>
+                <div class="use-case-card">
+                    <div class="use-case-icon">
+                        <i class="fas fa-chalkboard-teacher"></i>
+                    </div>
+                    <h3>Educational Assessment</h3>
+                    <p>BitQuill enables verification that student assignments represent genuine effort over appropriate timeframes rather than last-minute AI generation, supporting academic integrity while allowing technology use for legitimate purposes.</p>
+                    <div class="impact">
+                        <div class="impact-title">Impact:</div>
+                        <p>Educators can accurately assess student learning, institutions can maintain assessment validity, and students receive fair recognition for their work.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section class="faq-section" id="faq">
+        <div class="container">
+            <div class="section-title">
+                <h2>Frequently Asked Questions</h2>
+                <p>Common questions about BitQuill and human authorship verification</p>
+            </div>
+            
+            <div class="faq-container">
+                <div class="faq-item">
+                    <div class="faq-question">
+                        <span>How does BitQuill differ from timestamps or blockchain solutions?</span>
+                        <i class="fas fa-chevron-down faq-toggle"></i>
+                    </div>
+                    <div class="faq-answer">
+                        <p>Unlike simple timestamps or blockchain solutions that only record when a document was submitted, BitQuill creates a sequential, fine-grained history of document creation. It captures the progressive development over time that characterizes human work, with cryptographic binding between content and time proofs.</p>
+                    </div>
+                </div>
+                
+                <div class="faq-item">
+                    <div class="faq-question">
+                        <span>Can't AI just simulate human timing patterns?</span>
+                        <i class="fas fa-chevron-down faq-toggle"></i>
+                    </div>
+                    <div class="faq-answer">
+                        <p>BitQuill uses Verifiable Delay Functions (VDFs) that require actual elapsed time to compute, regardless of computing power. While AI could attempt to mimic human timing, it cannot accelerate the VDF's sequential proofs. BitQuill also analyzes complex writing pattern statistics that are difficult to simulate convincingly.</p>
+                    </div>
+                </div>
+                
+                <div class="faq-item">
+                    <div class="faq-question">
+                        <span>How can I share verification proofs with others?</span>
+                        <i class="fas fa-chevron-down faq-toggle"></i>
+                    </div>
+                    <div class="faq-answer">
+                        <p>BitQuill allows you to export compact verification proofs alongside your document. These proofs contain the cryptographic data needed for others to independently verify your document's creation timeline without requiring access to the full historical record.</p>
+                    </div>
+                </div>
+                
+                <div class="faq-item">
+                    <div class="faq-question">
+                        <span>Is BitQuill open source?</span>
+                        <i class="fas fa-chevron-down faq-toggle"></i>
+                    </div>
+                    <div class="faq-answer">
+                        <p>Yes, BitQuill is completely open source under the GPLv3 license. This ensures that anyone can review the code, contribute improvements, or verify that the system works as claimed without any hidden backdoors or security vulnerabilities.</p>
+                    </div>
+                </div>
+                
+                <div class="faq-item">
+                    <div class="faq-question">
+                        <span>Can I use BitQuill with existing document editors?</span>
+                        <i class="fas fa-chevron-down faq-toggle"></i>
+                    </div>
+                    <div class="faq-answer">
+                        <p>Currently, BitQuill operates as a standalone editor, but we're developing plugins for popular document editors like Microsoft Word, Google Docs, and VS Code. These will enable BitQuill's verification features while letting you work in your preferred environment.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+ 
+
+
+
+    <section class="action-section">
+        <div class="action-bg"></div>
+        <div class="container">
+            <div class="action-content">
+                <h2>Join the Digital Authenticity Revolution</h2>
+                <p>As the distinction between human and AI-created content becomes increasingly blurred, BitQuill offers a solution to preserve the value of human intellectual contribution.</p>
+                <div class="cta-buttons">
+                    <a href="https://github.com/ciphernom/BitQuill" class="btn btn-secondary btn-lg">Get Started with BitQuill <i class="fas fa-arrow-right"></i></a>
+                    <a href="#interactive" class="btn btn-outline btn-lg">Try the Demo</a>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <footer>
+        <div class="container">
+            <div class="footer-content">
+                <div class="footer-column">
+                    <h3>BitQuill</h3>
+                    <ul class="footer-links">
+                        <li><a href="#why">Why BitQuill <i class="fas fa-chevron-right"></i></a></li>
+                        <li><a href="#how-it-works">How It Works <i class="fas fa-chevron-right"></i></a></li>
+                        <li><a href="#features">Features <i class="fas fa-chevron-right"></i></a></li>
+                        <li><a href="#use-cases">Use Cases <i class="fas fa-chevron-right"></i></a></li>
+                        <li><a href="#interactive">Interactive Demo <i class="fas fa-chevron-right"></i></a></li>
+                    </ul>
+                </div>
+                <div class="footer-column">
+                    <h3>Resources</h3>
+                    <ul class="footer-links">
+                        <li><a href="https://github.com/ciphernom/BitQuill">GitHub Repository <i class="fas fa-chevron-right"></i></a></li>
+                        <li><a href="https://github.com/ciphernom/BitQuill/blob/main/README.md">Documentation <i class="fas fa-chevron-right"></i></a></li>
+                        <li><a href="https://github.com/ciphernom/BitQuill/issues">Report Issues <i class="fas fa-chevron-right"></i></a></li>
+                        <li><a href="https://raw.githubusercontent.com/ciphernom/BitQuill/77a50b1042b94075f6271829f9e8438dd14217c9/bitquill.pdf">Technical Paper<i class="fas fa-chevron-right"></i></a></li>
+                        <li><a href="#faq">FAQ <i class="fas fa-chevron-right"></i></a></li>
+                    </ul>
+                </div>
+                <div class="footer-column">
+                    <h3>Technology</h3>
+                    <ul class="footer-links">
+                        <li><a href="#how-it-works">Verifiable Delay Functions <i class="fas fa-chevron-right"></i></a></li>
+                        <li><a href="#how-it-works">Merkle Trees <i class="fas fa-chevron-right"></i></a></li>
+                        <li><a href="#how-it-works">Cryptographic Commitments <i class="fas fa-chevron-right"></i></a></li>
+                        <li><a href="#how-it-works">Writing Pattern Analysis <i class="fas fa-chevron-right"></i></a></li>
+                    </ul>
+                </div>
+                <div class="footer-column">
+                    <h3>Connect</h3>
+                    <ul class="footer-links">
+                        <li><a href="mailto:btconometrics@protonmail.com">Email Us <i class="fas fa-chevron-right"></i></a></li>
+                        <li><a href="https://X.com/aginometrics">X <i class="fas fa-chevron-right"></i></a></li>
+                    </ul>
+                    <div class="footer-social">
+                        <a href="https://github.com/ciphernom/BitQuill" class="social-icon" aria-label="GitHub">
+                            <i class="fab fa-github"></i>
+                        </a>
+                        <a href="https://x.com/aginometrics" class="social-icon" aria-label="x">
+                            <i class="fab fa-twitter"></i>
+                        </a>
+
+                    </div>
+                </div>
+            </div>
+            <div class="copyright">
+                <p>&copy; 2025 BitQuill. <a href="https://www.gnu.org/licenses/gpl-3.0.en.html">GPLv3 License</a>. Preserving the value of human authorship.</p>
+            </div>
+        </div>
+    </footer>
+
+    <a href="#" class="back-to-top" id="back-to-top" aria-label="Back to top">
+        <i class="fas fa-arrow-up"></i>
+    </a>
+
+    <div class="modal" id="video-modal">
+        <div class="modal-content">
+            <button class="modal-close" id="close-modal" aria-label="Close modal">
+                <i class="fas fa-times"></i>
+            </button>
+            <div class="video-container">
+                <iframe width="100%" height="480" src="" title="BitQuill Demo Video" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/particles.js@2.0.0/particles.min.js"></script>
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            // Initialize particles.js for hero background
+            if (typeof particlesJS !== 'undefined') {
+                particlesJS('particles-js', {
+                    particles: {
+                        number: { value: 80, density: { enable: true, value_area: 800 } },
+                        color: { value: "#ffffff" },
+                        shape: {
+                            type: "circle",
+                            stroke: { width: 0, color: "#000000" },
+                        },
+                        opacity: {
+                            value: 0.3,
+                            random: true,
+                            anim: { enable: true, speed: 1, opacity_min: 0.1, sync: false }
+                        },
+                        size: {
+                            value: 3,
+                            random: true,
+                            anim: { enable: false }
+                        },
+                        line_linked: {
+                            enable: true,
+                            distance: 150,
+                            color: "#ffffff",
+                            opacity: 0.2,
+                            width: 1
+                        },
+                        move: {
+                            enable: true,
+                            speed: 1,
+                            direction: "none",
+                            random: true,
+                            straight: false,
+                            out_mode: "out",
+                            bounce: false,
+                        }
+                    },
+                    interactivity: {
+                        detect_on: "canvas",
+                        events: {
+                            onhover: { enable: true, mode: "grab" },
+                            onclick: { enable: false },
+                            resize: true
+                        },
+                        modes: {
+                            grab: { distance: 140, line_linked: { opacity: 0.5 } }
+                        }
+                    },
+                    retina_detect: true
+                });
+            }
+            
+            // Header scroll effect
+            const header = document.getElementById('header');
+            window.addEventListener('scroll', function() {
+                if (window.scrollY > 50) {
+                    header.classList.add('scrolled');
+                } else {
+                    header.classList.remove('scrolled');
+                }
+            });
+            
+            // Back to top button
+            const backToTopButton = document.getElementById('back-to-top');
+            window.addEventListener('scroll', function() {
+                if (window.scrollY > 300) {
+                    backToTopButton.classList.add('visible');
+                } else {
+                    backToTopButton.classList.remove('visible');
+                }
+            });
+            
+            backToTopButton.addEventListener('click', function(e) {
+                e.preventDefault();
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+            });
+            
+            // Mobile menu toggle
+            const mobileMenuButton = document.querySelector('.mobile-menu-button');
+            const mobileMenu = document.querySelector('.mobile-menu');
+            const mobileMenuClose = document.querySelector('.mobile-menu-close');
+            
+            if (mobileMenuButton) {
+                mobileMenuButton.addEventListener('click', function() {
+                    mobileMenu.classList.add('active');
+                });
+            }
+            
+            if (mobileMenuClose) {
+                mobileMenuClose.addEventListener('click', function() {
+                    mobileMenu.classList.remove('active');
+                });
+            }
+            
+            // Close mobile menu when clicking a link
+            const mobileMenuLinks = document.querySelectorAll('.mobile-menu a');
+            mobileMenuLinks.forEach(link => {
+                link.addEventListener('click', function() {
+                    mobileMenu.classList.remove('active');
+                });
+            });
+            
+            // Smooth scrolling for anchor links
+            document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+                anchor.addEventListener('click', function(e) {
+                    if (this.getAttribute('href') !== '#') {
+                        e.preventDefault();
+                        
+                        const targetId = this.getAttribute('href');
+                        const targetElement = document.querySelector(targetId);
+                        
+                        if (targetElement) {
+                            window.scrollTo({
+                                top: targetElement.offsetTop - 80,
+                                behavior: 'smooth'
+                            });
+                        }
+                    }
+                });
+            });
+            
+            // Animate steps when they come into view
+            const animateSteps = function() {
+                const steps = document.querySelectorAll('.step');
+                
+                steps.forEach(step => {
+                    const position = step.getBoundingClientRect();
+                    
+                    // If the step is in the viewport
+                    if (position.top < window.innerHeight * 0.85 && position.bottom >= 0) {
+                        step.classList.add('visible');
+                    }
+                });
+            };
+            
+            window.addEventListener('scroll', animateSteps);
+            // Run once on load
+            setTimeout(animateSteps, 500);
+            
+            // Feature card expand/collapse
+            document.querySelectorAll('.expand-button').forEach(button => {
+                button.addEventListener('click', function() {
+                    const featureId = this.getAttribute('data-feature');
+                    const card = document.querySelector(`.feature-card[data-feature="${featureId}"]`);
+                    card.classList.toggle('expanded');
+                });
+            });
+            
+            // Demo tabs switching
+            document.querySelectorAll('.demo-tab').forEach(tab => {
+                tab.addEventListener('click', function() {
+                    // Remove active class from all tabs
+                    document.querySelectorAll('.demo-tab').forEach(t => {
+                        t.classList.remove('active');
+                    });
+                    
+                    // Add active class to clicked tab
+                    this.classList.add('active');
+                    
+                    // Hide all panes
+                    document.querySelectorAll('.demo-pane').forEach(p => {
+                        p.classList.remove('active');
+                    });
+                    
+                    // Show corresponding pane
+                    const tabId = this.getAttribute('data-tab');
+                    document.getElementById(`${tabId}-pane`).classList.add('active');
+                });
+            });
+            
+            // Tutorial overlay
+            const tutorialBtn = document.getElementById('tutorial-btn');
+            const tutorialOverlay = document.getElementById('tutorial-overlay');
+            const tutorialClose = document.getElementById('tutorial-close');
+            
+            if (tutorialBtn && tutorialOverlay && tutorialClose) {
+                tutorialBtn.addEventListener('click', function() {
+                    tutorialOverlay.classList.add('active');
+                });
+                
+                tutorialClose.addEventListener('click', function() {
+                    tutorialOverlay.classList.remove('active');
+                });
+            }
+            
+            // Demo Merkle tree simulation
+            const merkleTreeViz = document.getElementById('merkle-tree-viz');
+            const paragraphInput = document.getElementById('paragraph-input');
+            const addParagraphBtn = document.getElementById('add-paragraph');
+            const clockTicksContainer = document.getElementById('clock-ticks');
+            let vdfTickCounter = 0;
+            let leafCounter = 0;
+            
+            function createVDFTick() {
+                vdfTickCounter++;
+                
+                const tickElement = document.createElement('div');
+                tickElement.classList.add('clock-tick');
+                tickElement.innerHTML = `
+                    <span class="tick-sequence">Tick #${vdfTickCounter}:</span>
+                    <span class="tick-value">${generateRandomHash()}</span>
+                `;
+                
+                // Add element to clock display with animation
+                clockTicksContainer.appendChild(tickElement);
+                
+                // Remove oldest tick if we have more than 5
+                if (clockTicksContainer.children.length > 5) {
+                    clockTicksContainer.removeChild(clockTicksContainer.children[0]);
+                }
+                
+                return vdfTickCounter;
+            }
+            
+            function generateRandomHash() {
+                const characters = '0123456789abcdef';
+                let hash = '';
+                const length = 32;
+                
+                for (let i = 0; i < length; i++) {
+                    hash += characters.charAt(Math.floor(Math.random() * characters.length));
+                }
+                
+                return hash;
+            }
+            
+            // Start VDF clock simulation
+            let vdfInterval = setInterval(createVDFTick, 3000);
+            
+            // Add paragraph functionality
+            if (addParagraphBtn && paragraphInput && merkleTreeViz) {
+                addParagraphBtn.addEventListener('click', function() {
+                    const paragraph = paragraphInput.value.trim();
+                    
+                    if (paragraph === '') {
+                        alert('Please enter some text for the paragraph.');
+                        return;
+                    }
+                    
+                    // Create a new leaf
+                    leafCounter++;
+                    const currentVDFTick = vdfTickCounter;
+                    
+                    // Add to Merkle tree visualization
+                    updateMerkleTree(paragraph, currentVDFTick, leafCounter);
+                    
+                    // Clear input
+                    paragraphInput.value = '';
+                });
+                
+                // Also trigger on Enter key
+                paragraphInput.addEventListener('keypress', function(e) {
+                    if (e.key === 'Enter') {
+                        addParagraphBtn.click();
+                    }
+                });
+            }
+            
+            // Simple Merkle tree visualization
+            function updateMerkleTree(content, tickNumber, leafNumber) {
+                // Check if this is the first leaf
+                if (merkleTreeViz.innerHTML === '') {
+                    // Create initial SVG
+                    merkleTreeViz.innerHTML = `
+                        <svg width="100%" height="100%" viewBox="0 0 800 400">
+                            <defs>
+                                <linearGradient id="leafGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+                                    <stop offset="0%" stop-color="#f7931a" />
+                                    <stop offset="100%" stop-color="#e67e00" />
+                                </linearGradient>
+                                <linearGradient id="nodeGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+                                    <stop offset="0%" stop-color="#3772ff" />
+                                    <stop offset="100%" stop-color="#2563eb" />
+                                </linearGradient>
+                            </defs>
+                            <g id="merkle-tree"></g>
+                        </svg>
+                    `;
+                }
+                
+                const svg = merkleTreeViz.querySelector('svg');
+                const treeGroup = svg.querySelector('#merkle-tree');
+                
+                // Add new leaf
+                const leaf = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+                leaf.classList.add('leaf-node');
+                leaf.setAttribute('data-leaf-id', leafNumber);
+                
+                const x = 100 + (leafNumber - 1) * 150;
+                const y = 300;
+                
+                // Leaf rectangle
+                const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+                rect.setAttribute('x', x - 50);
+                rect.setAttribute('y', y - 20);
+                rect.setAttribute('width', 100);
+                rect.setAttribute('height', 40);
+                rect.setAttribute('rx', 5);
+                rect.setAttribute('fill', 'url(#leafGradient)');
+                
+                // Leaf text
+                const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+                text.setAttribute('x', x);
+                text.setAttribute('y', y + 5);
+                text.setAttribute('text-anchor', 'middle');
+                text.setAttribute('fill', 'white');
+                text.setAttribute('font-size', 12);
+                
+                // Truncate content if too long
+                const displayText = content.length > 15 ? content.substring(0, 15) + '...' : content;
+                text.textContent = `Leaf #${leafNumber}: ${displayText}`;
+                
+                leaf.appendChild(rect);
+                leaf.appendChild(text);
+                treeGroup.appendChild(leaf);
+                
+                // Connect leaf to VDF tick
+                const connection = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+                connection.setAttribute('x1', x);
+                connection.setAttribute('y1', y + 20);
+                connection.setAttribute('x2', x);
+                connection.setAttribute('y2', 340);
+                connection.setAttribute('stroke', '#10b981');
+                connection.setAttribute('stroke-width', 2);
+                connection.setAttribute('stroke-dasharray', '4 2');
+                connection.classList.add('vdf-connection');
+                
+                treeGroup.appendChild(connection);
+                
+                // Add or update the tree structure
+                updateTreeStructure(leafNumber);
+            }
+            
+            function updateTreeStructure(leafCount) {
+                const svg = merkleTreeViz.querySelector('svg');
+                const treeGroup = svg.querySelector('#merkle-tree');
+                
+                // Remove previous internal nodes
+                treeGroup.querySelectorAll('.internal-node').forEach(node => {
+                    node.remove();
+                });
+                
+                // Only build internal nodes if we have more than one leaf
+                if (leafCount < 2) return;
+                
+                // Simple tree-building logic
+                const levelSpacing = 60;
+                const leafY = 300;
+                
+                // Create levels based on leaf count
+                let currentLevel = [];
+                
+                // Get leaf positions
+                document.querySelectorAll('.leaf-node').forEach(leafNode => {
+                    const rect = leafNode.querySelector('rect');
+                    const x = parseFloat(rect.getAttribute('x')) + 50;
+                    currentLevel.push({ x, y: leafY - 20, element: leafNode });
+                });
+                
+                let level = 1;
+                
+                while (currentLevel.length > 1) {
+                    const nextLevel = [];
+                    
+                    // Process pairs of nodes
+                    for (let i = 0; i < currentLevel.length; i += 2) {
+                        const left = currentLevel[i];
+                        
+                        // Handle odd number of nodes
+                        if (i + 1 >= currentLevel.length) {
+                            nextLevel.push(left);
+                            continue;
+                        }
+                        
+                        const right = currentLevel[i + 1];
+                        
+                        // Calculate center point between left and right
+                        const centerX = (left.x + right.x) / 2;
+                        const centerY = leafY - levelSpacing * level - 20;
+                        
+                        // Create parent node
+                        const nodeGroup = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+                        nodeGroup.classList.add('internal-node');
+                        
+                        // Node circle
+                        const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+                        circle.setAttribute('cx', centerX);
+                        circle.setAttribute('cy', centerY);
+                        circle.setAttribute('r', 15);
+                        circle.setAttribute('fill', 'url(#nodeGradient)');
+                        
+                        // Connection to left
+                        const leftConnection = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+                        leftConnection.setAttribute('x1', centerX);
+                        leftConnection.setAttribute('y1', centerY);
+                        leftConnection.setAttribute('x2', left.x);
+                        leftConnection.setAttribute('y2', left.y);
+                        leftConnection.setAttribute('stroke', '#3772ff');
+                        leftConnection.setAttribute('stroke-width', 2);
+                        
+                        // Connection to right
+                        const rightConnection = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+                        rightConnection.setAttribute('x1', centerX);
+                        rightConnection.setAttribute('y1', centerY);
+                        rightConnection.setAttribute('x2', right.x);
+                        rightConnection.setAttribute('y2', right.y);
+                        rightConnection.setAttribute('stroke', '#3772ff');
+                        rightConnection.setAttribute('stroke-width', 2);
+                        
+                        nodeGroup.appendChild(leftConnection);
+                        nodeGroup.appendChild(rightConnection);
+                        nodeGroup.appendChild(circle);
+                        
+                        treeGroup.appendChild(nodeGroup);
+                        
+                        nextLevel.push({ x: centerX, y: centerY, element: nodeGroup });
+                    }
+                    
+                    currentLevel = nextLevel;
+                    level++;
+                }
+                
+                // If we're at the root node, add label
+                if (currentLevel.length === 1) {
+                    const root = currentLevel[0];
+                    
+                    const rootLabel = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+                    rootLabel.setAttribute('x', root.x);
+                    rootLabel.setAttribute('y', root.y - 25);
+                    rootLabel.setAttribute('text-anchor', 'middle');
+                    rootLabel.setAttribute('fill', '#111827');
+                    rootLabel.setAttribute('font-size', 14);
+                    rootLabel.setAttribute('font-weight', 'bold');
+                    rootLabel.textContent = 'Root';
+                    
+                    treeGroup.appendChild(rootLabel);
+                }
+            }
+            
+            // Demo restart button
+            const restartDemoBtn = document.getElementById('restart-demo');
+            if (restartDemoBtn) {
+                restartDemoBtn.addEventListener('click', function() {
+                    // Clear visualization
+                    if (merkleTreeViz) {
+                        merkleTreeViz.innerHTML = '';
+                    }
+                    
+                    // Clear clock ticks
+                    if (clockTicksContainer) {
+                        clockTicksContainer.innerHTML = '';
+                    }
+                    
+                    // Reset counters
+                    vdfTickCounter = 0;
+                    leafCounter = 0;
+                    
+                    // Clear input
+                    if (paragraphInput) {
+                        paragraphInput.value = '';
+                    }
+                    
+                    // Restart VDF clock
+                    clearInterval(vdfInterval);
+                    vdfInterval = setInterval(createVDFTick, 3000);
+                });
+            }
+            
+            // Verification button
+            const verifyDemoBtn = document.getElementById('verify-demo');
+            if (verifyDemoBtn) {
+                verifyDemoBtn.addEventListener('click', function() {
+                    // Switch to verification tab
+                    document.querySelectorAll('.demo-tab').forEach(tab => {
+                        tab.classList.remove('active');
+                        if (tab.getAttribute('data-tab') === 'verification') {
+                            tab.classList.add('active');
+                        }
+                    });
+                    
+                    document.querySelectorAll('.demo-pane').forEach(pane => {
+                        pane.classList.remove('active');
+                    });
+                    
+                    document.getElementById('verification-pane').classList.add('active');
+                });
+            }
+            
+            // Run verification button
+            const runVerificationBtn = document.getElementById('run-verification');
+            const verificationResults = document.getElementById('verification-results');
+            
+            if (runVerificationBtn && verificationResults) {
+                runVerificationBtn.addEventListener('click', function() {
+                    // Get selected verification level
+                    const level = document.querySelector('input[name="verify-level"]:checked').value;
+                    
+                    // Show loading
+                    verificationResults.innerHTML = '<div class="verification-loading"><i class="fas fa-spinner fa-spin"></i> Running verification...</div>';
+                    
+                    // Simulate verification process
+                    setTimeout(() => {
+                        const isValid = Math.random() > 0.2; // 80% chance of success
+                        
+                        let resultsHTML = '';
+                        
+                        if (isValid) {
+                            resultsHTML = `
+                                <div class="verification-success">
+                                    <i class="fas fa-check-circle"></i>
+                                    <h3>Verification Passed!</h3>
+                                    <p>The document's integrity has been verified successfully. The Merkle tree structure is valid, and all VDF timestamping is consistent.</p>
+                                </div>
+                                <div class="verification-details">
+                                    <h4>Verification Details:</h4>
+                                    <ul class="verification-detail-list">
+                                        <li class="valid">✓ Merkle tree structure: Valid</li>
+                                        <li class="valid">✓ Paragraph linking: Valid</li>
+                                        <li class="valid">✓ VDF time proofs: Valid</li>
+                                        <li class="valid">✓ Document state consistency: Valid</li>
+                                        ${level === 'forensic' ? '<li class="valid">✓ Writing pattern analysis: No anomalies detected</li>' : ''}
+                                    </ul>
+                                </div>
+                            `;
+                        } else {
+                            resultsHTML = `
+                                <div class="verification-failure">
+                                    <i class="fas fa-exclamation-triangle"></i>
+                                    <h3>Verification Failed</h3>
+                                    <p>The document integrity check has found potential issues that need to be addressed.</p>
+                                </div>
+                                <div class="verification-details">
+                                    <h4>Verification Issues:</h4>
+                                    <ul class="verification-detail-list">
+                                        <li class="valid">✓ Merkle tree structure: Valid</li>
+                                        <li class="invalid">✗ Paragraph linking: Invalid at paragraph #2</li>
+                                        <li class="valid">✓ VDF time proofs: Valid</li>
+                                        <li class="invalid">✗ Document state consistency: Modified content detected</li>
+                                        ${level === 'forensic' ? '<li class="invalid">✗ Writing pattern analysis: Unusual timing pattern detected</li>' : ''}
+                                    </ul>
+                                </div>
+                            `;
+                        }
+                        
+                        verificationResults.innerHTML = resultsHTML;
+                    }, 1500);
+                });
+            }
+            
+            // Video modal
+            const videoTrigger = document.getElementById('demo-video');
+            const videoModal = document.getElementById('video-modal');
+            const closeModal = document.getElementById('close-modal');
+            const videoIframe = videoModal ? videoModal.querySelector('iframe') : null;
+            
+            if (videoTrigger && videoModal && closeModal && videoIframe) {
+                videoTrigger.addEventListener('click', function() {
+                    // Set video source
+                    videoIframe.src = "https://www.youtube.com/embed/dQw4w9WgXcQ?autoplay=1"; // Replace with actual demo video
+                    videoModal.classList.add('active');
+                });
+                
+                closeModal.addEventListener('click', function() {
+                    videoModal.classList.remove('active');
+                    // Clear video source to stop playback
+                    videoIframe.src = "";
+                });
+            }
+            
+            // FAQ accordion
+            document.querySelectorAll('.faq-question').forEach(question => {
+                question.addEventListener('click', function() {
+                    const faqItem = this.parentElement;
+                    
+                    // Toggle active state of clicked item
+                    faqItem.classList.toggle('active');
+                    
+                    // Close other items
+                    document.querySelectorAll('.faq-item').forEach(item => {
+                        if (item !== faqItem) {
+                            item.classList.remove('active');
+                        }
+                    });
+                });
+            });
+            
+            // Testimonial slider
+            const testimonialSlider = document.getElementById('testimonials-slider');
+            const testimonialSlides = testimonialSlider ? testimonialSlider.querySelectorAll('.testimonial-slide') : [];
+            const testimonialDots = testimonialSlider ? testimonialSlider.querySelectorAll('.testimonial-dot') : [];
+            const testimonialPrev = testimonialSlider ? testimonialSlider.querySelector('.testimonial-prev') : null;
+            const testimonialNext = testimonialSlider ? testimonialSlider.querySelector('.testimonial-next') : null;
+            
+            let currentSlide = 0;
+            
+            function showSlide(index) {
+                // Wrap around if index is out of bounds
+                if (index < 0) {
+                    index = testimonialSlides.length - 1;
+                } else if (index >= testimonialSlides.length) {
+                    index = 0;
+                }
+                
+                // Update current slide
+                currentSlide = index;
+                
+                // Hide all slides and remove active class from dots
+                testimonialSlides.forEach(slide => {
+                    slide.style.display = 'none';
+                });
+                
+                testimonialDots.forEach(dot => {
+                    dot.classList.remove('active');
+                });
+                
+                // Show current slide and activate corresponding dot
+                testimonialSlides[currentSlide].style.display = 'block';
+                testimonialDots[currentSlide].classList.add('active');
+            }
+            
+            // Initialize slider if elements exist
+            if (testimonialSlides.length > 0) {
+                showSlide(0);
+                
+                // Previous button
+                if (testimonialPrev) {
+                    testimonialPrev.addEventListener('click', function() {
+                        showSlide(currentSlide - 1);
+                    });
+                }
+                
+                // Next button
+                if (testimonialNext) {
+                    testimonialNext.addEventListener('click', function() {
+                        showSlide(currentSlide + 1);
+                    });
+                }
+                
+                // Dots navigation
+                testimonialDots.forEach((dot, index) => {
+                    dot.addEventListener('click', function() {
+                        showSlide(index);
+                    });
+                });
+                
+                // Auto-advance slides every 5 seconds
+                setInterval(() => {
+                    showSlide(currentSlide + 1);
+                }, 5000);
+            }
+            
+            // Newsletter form submission
+            const newsletterForm = document.getElementById('newsletter-form');
+            const newsletterSuccess = document.getElementById('newsletter-success');
+            
+            if (newsletterForm && newsletterSuccess) {
+                newsletterForm.addEventListener('submit', function(e) {
+                    e.preventDefault();
+                    
+                    // Simulate form submission
+                    newsletterForm.style.display = 'none';
+                    newsletterSuccess.style.display = 'block';
+                });
+            }
+        });
+    </script>
+</body>
+</html>
