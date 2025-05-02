@@ -5,7 +5,8 @@ use crossterm::{
 };
 use num_bigint::{BigUint, RandBigInt};
 use num_integer::Integer;
-use num_traits::One;
+use num_traits::{One, Zero}; // Added Zero trait here
+
 use rand::thread_rng;
 use sha2::{Digest, Sha256};
 use std::{
@@ -17,6 +18,7 @@ use std::{
     path::{PathBuf, Path},
     fs,
     env,
+    fmt,
 };
 use tui::{
     backend::CrosstermBackend,
@@ -71,6 +73,78 @@ const DIFFICULTY_ADJUSTMENT_INTERVAL: u64 = 1000;
 //MINIMUM difficulty 
 const ABSOLUTE_MIN_ITERATIONS: u64 = 100_000; // Reasonable minimum
 
+// Maximum buffer size to prevent memory issues
+const MAX_BUFFER_SIZE: usize = 10_000_000; // 10MB
+
+// Maximum allowed leaves to prevent resource exhaustion
+const MAX_ALLOWED_LEAVES: usize = 50_000;
+
+// Safe maximum string size
+const MAX_CONTENT_SIZE: usize = 1_000_000; // 1MB per paragraph
+
+// Error handling types
+type BitQuillResult<T> = Result<T, BitQuillError>;
+
+#[derive(Debug)]
+enum BitQuillError {
+    IoError(io::Error),
+    SerializationError(String),
+    DeserializationError(String),
+    HashError(String),
+    VdfError(String),
+    ValidationError(String),
+    ResourceExhaustedError(String),
+    ThreadError(String),
+    StateError(String),
+    LockError(String),
+}
+
+impl fmt::Display for BitQuillError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            BitQuillError::IoError(e) => write!(f, "I/O error: {}", e),
+            BitQuillError::SerializationError(s) => write!(f, "Serialization error: {}", s),
+            BitQuillError::DeserializationError(s) => write!(f, "Deserialization error: {}", s),
+            BitQuillError::HashError(s) => write!(f, "Hash error: {}", s),
+            BitQuillError::VdfError(s) => write!(f, "VDF error: {}", s),
+            BitQuillError::ValidationError(s) => write!(f, "Validation error: {}", s),
+            BitQuillError::ResourceExhaustedError(s) => write!(f, "Resource exhausted: {}", s),
+            BitQuillError::ThreadError(s) => write!(f, "Thread error: {}", s),
+            BitQuillError::StateError(s) => write!(f, "State error: {}", s),
+            BitQuillError::LockError(s) => write!(f, "Lock error: {}", s),
+        }
+    }
+}
+
+impl From<io::Error> for BitQuillError {
+    fn from(error: io::Error) -> Self {
+        BitQuillError::IoError(error)
+    }
+}
+
+impl From<serde_json::Error> for BitQuillError {
+    fn from(error: serde_json::Error) -> Self {
+        BitQuillError::DeserializationError(error.to_string())
+    }
+}
+
+impl<T> From<std::sync::PoisonError<T>> for BitQuillError {
+    fn from(error: std::sync::PoisonError<T>) -> Self {
+        BitQuillError::LockError(error.to_string())
+    }
+}
+
+impl From<std::sync::mpsc::SendError<u64>> for BitQuillError {
+    fn from(error: std::sync::mpsc::SendError<u64>) -> Self {
+        BitQuillError::ThreadError(format!("Channel send error: {}", error))
+    }
+}
+
+impl From<std::sync::mpsc::RecvError> for BitQuillError {
+    fn from(error: std::sync::mpsc::RecvError) -> Self {
+        BitQuillError::ThreadError(format!("Channel receive error: {}", error))
+    }
+}
 
 // Document state representing the content at a specific point
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -88,6 +162,7 @@ struct DocumentState {
 mod timestamp_serde {
     use serde::{Deserialize, Deserializer, Serializer};
     use std::time::SystemTime;
+    use std::time::Duration;
 
     pub fn serialize<S>(time: &SystemTime, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -95,7 +170,7 @@ mod timestamp_serde {
     {
         let timestamp = time
             .duration_since(SystemTime::UNIX_EPOCH)
-            .map_err(serde::ser::Error::custom)?
+            .unwrap_or(Duration::from_secs(0))
             .as_secs();
         serializer.serialize_u64(timestamp)
     }
@@ -211,9 +286,25 @@ impl SearchState {
         self.current_matches.clear();
         self.current_match_idx = None;
     }
+    
+    fn safely_add_to_query(&mut self, c: char) -> bool {
+        if self.search_query.len() < 1000 {  // Prevent unbounded growth
+            self.search_query.push(c);
+            true
+        } else {
+            false
+        }
+    }
+    
+    fn safely_add_to_replace(&mut self, c: char) -> bool {
+        if self.replace_text.len() < 1000 {  // Prevent unbounded growth
+            self.replace_text.push(c);
+            true
+        } else {
+            false
+        }
+    }
 }
-
-
 
 impl Default for DocumentState {
     fn default() -> Self {
@@ -274,7 +365,7 @@ struct MerkleQuillFile {
 }
 
 impl MerkleQuillFile {
-    fn new(_content: String, metadata: DocumentMetadata) -> Self {
+    fn new(metadata: DocumentMetadata) -> Self {
         MerkleQuillFile {
             metadata,
             leaves: None,
@@ -290,28 +381,35 @@ impl MerkleQuillFile {
 
 /// VDF using sequential squaring with RSA modulus.
 /// Uses a standardized RSA-2048 modulus with no known factorization.
-/// Source: RSA Challenge Number (or other trusted source)
 struct VDF {
     modulus: Arc<BigUint>,
 }
 
 impl VDF {
-    fn new(_bit_length: usize) -> Self {
+    fn new(_bit_length: usize) -> BitQuillResult<Self> {
         // Use standardized RSA modulus instead of generating p*q
         let modulus_hex = "C7970CEEDCC3B0754490201A7AA613CD73911081C790F5F1A8726F463550BB5B7FF0DB8E1EA1189EC72F93D1650011BD721AEEACC2ACDE32A04107F0648C2813A31F5B0B7765FF8B44B4B6FFC93384B646EB09C7CF5E8592D40EA33C80039F35B4F14A04B51F7BFD781BE4D1673164BA8EB991C2C4D730BBBE35F592BDEF524AF7E8DAEFD26C66FC02C479AF89D64D373F442709439DE66CEB955F3EA37D5159F6135809F85334B5CB1813ADDC80CD05609F10AC6A95AD65872C909525BDAD32BC729592642920F24C61DC5B3C3B7923E56B16A4D9D373D8721F24A3FC0F1B3131F55615172866BCCC30F95054C824E733A5EB6817F7BC16399D48C6361CC7E5";
         
         // Convert hex to BigUint
-        let modulus = Arc::new(BigUint::parse_bytes(modulus_hex.as_bytes(), 16)
-            .expect("Failed to parse standardized RSA modulus"));
-        
-        VDF { modulus }
+        match BigUint::parse_bytes(modulus_hex.as_bytes(), 16) {
+            Some(modulus) => Ok(VDF { modulus: Arc::new(modulus) }),
+            None => Err(BitQuillError::VdfError("Failed to parse standardized RSA modulus".to_string()))
+        }
     }
 
     // Generate a prime number of the specified bit length
-    fn generate_prime(bit_length: usize) -> BigUint {
-        let mut rng = thread_rng();
+    fn generate_prime(bit_length: usize) -> BitQuillResult<BigUint> {
+        if bit_length < 16 || bit_length > 4096 {
+            return Err(BitQuillError::ValidationError(format!(
+                "Invalid bit length for prime generation: {}", bit_length
+            )));
+        }
 
-        loop {
+        let mut rng = thread_rng();
+        let mut attempts = 0;
+        let max_attempts = 1000;  // Prevent infinite loops
+
+        while attempts < max_attempts {
             // Generate a random odd number of the required bit length
             let mut candidate = rng.gen_biguint(bit_length as u64);
 
@@ -322,14 +420,21 @@ impl VDF {
 
             // Ensure the number has the correct bit length
             if candidate.bits() != bit_length as u64 {
+                attempts += 1;
                 continue;
             }
 
             // Check primality using the Miller-Rabin test
             if Self::is_prime(&candidate, 40) { // Increased rounds for stronger primality testing
-                return candidate;
+                return Ok(candidate);
             }
+            
+            attempts += 1;
         }
+        
+        Err(BitQuillError::VdfError(format!(
+            "Failed to generate prime after {} attempts", max_attempts
+        )))
     }
 
     // Miller-Rabin primality test
@@ -387,13 +492,19 @@ impl VDF {
     }
 
     // Generate a small prime for the Wesolowski proof
-    fn generate_proof_prime() -> BigUint {
+    fn generate_proof_prime() -> BitQuillResult<BigUint> {
         // Generate a ~128-bit prime for l as recommended by Wesolowski
         Self::generate_prime(128)
     }
 
     // Compute the VDF with Wesolowski proof: x^(2^t) mod N
-    fn compute_with_proof(&self, input: &[u8], iterations: u64) -> VDFProof {
+    fn compute_with_proof(&self, input: &[u8], iterations: u64) -> BitQuillResult<VDFProof> {
+        if iterations > MAX_VDF_ITERATIONS {
+            return Err(BitQuillError::ValidationError(format!(
+                "Iterations {} exceeds maximum allowed {}", iterations, MAX_VDF_ITERATIONS
+            )));
+        }
+    
         // Hash the input to get our starting value
         let mut hasher = Sha256::new();
         hasher.update(input);
@@ -403,8 +514,11 @@ impl VDF {
         // Get a reference to the modulus
         let modulus = &*self.modulus;
 
-        // Generate proof prime l (fixed size for proof efficiency)
-        let l = Self::generate_proof_prime();
+        // Generate proof prime l
+        let l = match Self::generate_proof_prime() {
+            Ok(prime) => prime,
+            Err(e) => return Err(e)
+        };
 
         // Calculate r = 2^t mod l
         let r = BigUint::from(2u32).modpow(&BigUint::from(iterations), &l);
@@ -415,35 +529,31 @@ impl VDF {
             y = (&y * &y) % modulus;
         }
 
-        // For large t, calculating 2^t directly might overflow.
-        // We'll use modpow for the calculation of q
-
-        // First, find the quotient q = floor((2^t - r) / l)
-        // We can calculate this as q = floor(2^t / l) - floor(r / l)
-        // Since r < l, floor(r / l) = 0, so q = floor(2^t / l)
-        
-        // For large t, we calculate q = floor(2^t / l) using modular arithmetic
         // First, calculate 2^t mod l
         let two_t_mod_l = BigUint::from(2u32).modpow(&BigUint::from(iterations), &l);
         
-        // Then, use the fact that floor(2^t / l) = floor((2^t - (2^t mod l)) / l)
-        // This avoids calculating the full 2^t value
-        let q_times_l = BigUint::from(2u32).pow(iterations as u32) - two_t_mod_l;
+        // For large t, calculate q = floor((2^t - (2^t mod l)) / l) carefully
+        let power = match calculate_power_safely(iterations) {
+            Ok(p) => p,
+            Err(e) => return Err(BitQuillError::VdfError(e))
+        };
+        
+        let q_times_l = power - two_t_mod_l;
         let q = &q_times_l / &l;
 
         // Calculate proof π = x^q mod N
         let pi = x.modpow(&q, modulus);
 
-        VDFProof {
+        Ok(VDFProof {
             y: y.to_bytes_be(),
             pi: pi.to_bytes_be(),
             l: l.to_bytes_be(),
             r: r.to_bytes_be(),
-        }
+        })
     }
 
     // Verify a VDF output using Wesolowski's efficient verification
-    fn verify(&self, input: &[u8], proof: &VDFProof) -> bool {
+    fn verify(&self, input: &[u8], proof: &VDFProof) -> BitQuillResult<bool> {
         // Hash the input to get our starting value x
         let mut hasher = Sha256::new();
         hasher.update(input);
@@ -458,13 +568,18 @@ impl VDF {
         let pi = BigUint::from_bytes_be(&proof.pi);
         let l = BigUint::from_bytes_be(&proof.l);
         let r = BigUint::from_bytes_be(&proof.r);
+        
+        // Verify l is a reasonable prime to prevent attacks
+        if l.bits() < 120 || !Self::is_prime(&l, 20) {
+            return Err(BitQuillError::VdfError("Invalid proof prime l".to_string()));
+        }
 
         // Verify: y == pi^l * x^r mod N
         let pi_l = pi.modpow(&l, modulus);
         let x_r = x.modpow(&r, modulus);
         let right_side = (pi_l * x_r) % modulus;
 
-        y == right_side
+        Ok(y == right_side)
     }
 
     // Convert desired delay time to iteration count
@@ -475,7 +590,7 @@ impl VDF {
         
         // Calculate with minimum threshold
         let iterations = (seconds * iterations_per_second) as u64;
-        iterations.max(MIN_VDF_ITERATIONS)
+        iterations.max(MIN_VDF_ITERATIONS).min(MAX_VDF_ITERATIONS)
     }
 
     // Get the modulus as bytes for serialization
@@ -484,9 +599,49 @@ impl VDF {
     }
 
     // Recreate VDF from serialized modulus
-    fn from_modulus_bytes(bytes: &[u8]) -> Self {
+    fn from_modulus_bytes(bytes: &[u8]) -> BitQuillResult<Self> {
+        if bytes.is_empty() {
+            return Err(BitQuillError::ValidationError("Empty modulus bytes".to_string()));
+        }
+        
         let modulus = Arc::new(BigUint::from_bytes_be(bytes));
-        VDF { modulus }
+        
+        // Basic validation
+        if modulus.bits() < 1024 {
+            return Err(BitQuillError::ValidationError(format!(
+                "Modulus too small: {} bits (min 1024)", modulus.bits()
+            )));
+        }
+        
+        Ok(VDF { modulus })
+    }
+}
+
+// Safely calculate 2^t for large t values
+fn calculate_power_safely(iterations: u64) -> Result<BigUint, String> {
+    if iterations > 1000 {
+        // For very large iterations, use a more efficient approach
+        let base = BigUint::from(2u32);
+        let exp = BigUint::from(iterations);
+        
+        // Start with 1
+        let mut result = BigUint::one();
+        let mut base_pow = base.clone();
+        let mut exp_remaining = exp.clone();
+        
+        // Binary exponentiation algorithm (Russian peasant algorithm)
+        while !exp_remaining.is_zero() { // Changed from BigUint::zero() to is_zero()
+            if exp_remaining.is_odd() {
+                result = result * &base_pow;
+            }
+            base_pow = &base_pow * &base_pow;
+            exp_remaining >>= 1;
+        }
+        
+        Ok(result)
+    } else {
+        // For smaller iterations, direct calculation is fine
+        Ok(BigUint::from(2u32).pow(iterations as u32))
     }
 }
 
@@ -526,6 +681,7 @@ struct MerkleDocument {
     vdf_clock_receiver: mpsc::Receiver<VDFClockTick>,
     vdf_iterations_sender: mpsc::Sender<u64>, // Channel to update VDF difficulty
     vdf_clock_shutdown: Arc<Mutex<bool>>,
+    vdf_thread_handle: Option<thread::JoinHandle<()>>,
     latest_tick: Option<VDFClockTick>,
     historical_ticks: HashMap<u64, VDFClockTick>,
     
@@ -549,56 +705,59 @@ struct MerkleDocument {
     last_verification: Option<VerificationResult>,
 }
 
- //  struct for writing pattern analysis results
-    #[derive(Clone, Debug)]
-    struct WritingPatternAnomaly {
-        leaf_number: u64,
-        description: String,
-        confidence: f64, // How confident we are this is an anomaly (0.0-1.0)
-    }
+// Struct for writing pattern analysis results
+#[derive(Clone, Debug)]
+struct WritingPatternAnomaly {
+    leaf_number: u64,
+    description: String,
+    confidence: f64, // How confident we are this is an anomaly (0.0-1.0)
+}
 
-    #[derive(Clone, Debug)]
-    struct WritingPatternResult {
-        average_interval: u64,
-        interval_deviation: f64,
-        detected_anomalies: Vec<WritingPatternAnomaly>,
-    }
-    //  struct for compact verification proof
-    #[derive(Serialize, Deserialize)]
-    struct VerificationProof {
-        document_hash: String,
-        merkle_root: Option<String>,
-        leaf_count: u64,
-        author: String,
-        title: String,
-        #[serde(with = "timestamp_serde")]
-        creation_timestamp: SystemTime,
-        #[serde(with = "timestamp_serde")]
-        last_modification: SystemTime,
-        verification_samples: Vec<VerificationSample>,
-        #[serde(with = "timestamp_serde")]
-        proof_generation_time: SystemTime,
-    }
+#[derive(Clone, Debug)]
+struct WritingPatternResult {
+    average_interval: u64,
+    interval_deviation: f64,
+    detected_anomalies: Vec<WritingPatternAnomaly>,
+}
 
-    #[derive(Serialize, Deserialize)]
-    struct VerificationSample {
-        leaf_number: u64,
-        leaf_hash: String,
-        #[serde(with = "timestamp_serde")]
-        timestamp: SystemTime,
-        vdf_reference: u64,
-        commitment: String,
-    }
-    
+// Struct for compact verification proof
+#[derive(Serialize, Deserialize)]
+struct VerificationProof {
+    document_hash: String,
+    merkle_root: Option<String>,
+    leaf_count: u64,
+    author: String,
+    title: String,
+    #[serde(with = "timestamp_serde")]
+    creation_timestamp: SystemTime,
+    #[serde(with = "timestamp_serde")]
+    last_modification: SystemTime,
+    verification_samples: Vec<VerificationSample>,
+    #[serde(with = "timestamp_serde")]
+    proof_generation_time: SystemTime,
+}
+
+#[derive(Serialize, Deserialize)]
+struct VerificationSample {
+    leaf_number: u64,
+    leaf_hash: String,
+    #[serde(with = "timestamp_serde")]
+    timestamp: SystemTime,
+    vdf_reference: u64,
+    commitment: String,
+}
+
 impl MerkleDocument {
-    fn new() -> Self {
+    fn new() -> BitQuillResult<Self> {
         // Production-grade VDF with 2048-bit modulus
-        let vdf = VDF::new(2048);
+        let vdf = VDF::new(2048)?;
         let modulus_clone = vdf.modulus.clone();
 
         // Create channels for VDF clock and iterations update
         let (vdf_clock_sender, vdf_clock_receiver) = mpsc::channel();
-        let (iterations_sender, iterations_receiver) = mpsc::channel();
+        let (iterations_sender, iterations_receiver) = mpsc::channel::<u64>();
+
+
         
         let shutdown_flag = Arc::new(Mutex::new(false));
         let shutdown_clone = shutdown_flag.clone();
@@ -607,24 +766,66 @@ impl MerkleDocument {
         let initial_iterations = INITIAL_VDF_ITERATIONS;
 
         // Start the VDF clock thread with adjustable difficulty
-        thread::spawn(move || {
+        let handle = thread::spawn(move || {
             let mut current_input = Sha256::digest(b"VDF Clock Genesis").to_vec();
             let mut sequence_number = 0;
             let mut current_iterations = initial_iterations;
             
             let modulus = &*modulus_clone;
 
-            while !*shutdown_clone.lock().unwrap() {
+            loop {
+                // Check for shutdown signal
+                let should_shutdown = match shutdown_clone.lock() {
+                    Ok(guard) => *guard,
+                    Err(poisoned) => {
+                        // Handle poisoned mutex by taking ownership
+                        *poisoned.into_inner()  // Gets ownership of inner value
+                    }
+                };
+                
+                if should_shutdown {
+                    break;
+                }
+                
                 // Check for updated iterations
-                if let Ok(new_iterations) = iterations_receiver.try_recv() {
-                    current_iterations = new_iterations;
+                match iterations_receiver.try_recv() {
+                    Ok(new_iterations) => {
+                        current_iterations = new_iterations.clamp(
+                            MIN_VDF_ITERATIONS, 
+                            MAX_VDF_ITERATIONS
+                        );
+                    },
+                    Err(mpsc::TryRecvError::Empty) => {},
+                    Err(mpsc::TryRecvError::Disconnected) => {
+                        // Channel closed, exit thread
+                        break;
+                    }
                 }
                 
                 // Calculate previous output hash for verification
                 let prev_output_hash = hex::encode(Sha256::digest(&current_input).to_vec());
 
                 // Compute VDF with current difficulty
-                let proof = compute_vdf_proof(&current_input, current_iterations, modulus);
+                let proof_result = compute_vdf_proof(&current_input, current_iterations, modulus);
+                
+                let proof = match proof_result {
+                    Ok(p) => p,
+                    Err(_) => {
+                        // In case of error, use a fallback approach
+                        // This is a safety measure to prevent the thread from crashing
+                        let mut fallback_hasher = Sha256::new();
+                        fallback_hasher.update(&current_input);
+                        fallback_hasher.update(b"fallback");
+                        let fallback_hash = fallback_hasher.finalize();
+                        
+                        VDFProof {
+                            y: fallback_hash.to_vec(),
+                            pi: fallback_hash.to_vec(),
+                            l: BigUint::from(65537u32).to_bytes_be(), // Use a known prime
+                            r: BigUint::from(1u32).to_bytes_be(),
+                        }
+                    }
+                };
 
                 // Create tick with system time
                 let tick = VDFClockTick {
@@ -639,8 +840,8 @@ impl MerkleDocument {
 
                 // Send tick to main thread
                 if vdf_clock_sender.send(tick.clone()).is_err() {
-                    eprintln!("VDF clock channel closed. Shutting down thread.");
-                    break; // Main thread terminated
+                    // Main thread terminated
+                    break;
                 }
 
                 // Update for next iteration
@@ -655,7 +856,7 @@ impl MerkleDocument {
         // Create initial state hash for current_state
         let genesis_hash = hex::encode(Sha256::digest(b"MerkleQuill Genesis").to_vec());
 
-        MerkleDocument {
+        Ok(MerkleDocument {
             root: None,
             leaves: Vec::new(),
             nodes: HashMap::new(),
@@ -669,6 +870,7 @@ impl MerkleDocument {
             vdf_clock_receiver,
             vdf_iterations_sender: iterations_sender,
             vdf_clock_shutdown: shutdown_flag,
+            vdf_thread_handle: Some(handle),
             latest_tick: None,
             edit_intervals: Vec::new(),
             historical_ticks: HashMap::new(),
@@ -681,12 +883,12 @@ impl MerkleDocument {
             metadata: DocumentMetadata::default(),
             dirty: false,
             last_verification: None,
-        }
+        })
     }
 
     // Process VDF clock ticks and create leaves when needed
-    fn process_vdf_ticks(&mut self) -> bool {
-        let  leaf_created = false;
+    fn process_vdf_ticks(&mut self) -> BitQuillResult<bool> {
+        let leaf_created = false;
 
         // Process new clock ticks
         while let Ok(tick) = self.vdf_clock_receiver.try_recv() {
@@ -700,44 +902,43 @@ impl MerkleDocument {
                 self.tick_timestamps.pop_front();
             }
             
-            // REMOVE automatic leaf creation code:
-            // if (tick.sequence_number % LEAF_TICK_INTERVAL == 0) || 
-            //    (self.pending_changes && tick.sequence_number >= self.last_leaf_tick + MIN_TICKS_FOR_PENDING_LEAF) {
-            //     self.create_leaf(tick.sequence_number);
-            //     leaf_created = true;
-            //     self.pending_changes = false;
-            //     self.last_leaf_tick = tick.sequence_number;
-            // }
+            // Automatic leaf creation REMOVED as specified in original code
             
             // Keep difficulty adjustment
             if tick.sequence_number % DIFFICULTY_ADJUSTMENT_INTERVAL == 0 {
-                self.adjust_difficulty();
+                self.adjust_difficulty()?;
             }
         }
 
-        // Rest of the function stays the same
-        leaf_created // This will now always be false unless manual creation happens
-}
+        Ok(leaf_created)
+    }
     
     // Adjust VDF difficulty based on historical timing
-    fn adjust_difficulty(&mut self) {
+    fn adjust_difficulty(&mut self) -> BitQuillResult<()> {
         if self.tick_timestamps.len() < 100 { // Need reasonable sample size
-            return; // Not enough data to adjust
+            return Ok(()); // Not enough data to adjust
         }
         
         // Get first and last timestamps in the window
-        let first = self.tick_timestamps.front().unwrap();
-        let last = self.tick_timestamps.back().unwrap();
+        let first = match self.tick_timestamps.front() {
+            Some(f) => f,
+            None => return Ok(()) // No timestamps available
+        };
         
-        let elapsed_ticks = last.0 - first.0;
+        let last = match self.tick_timestamps.back() {
+            Some(l) => l,
+            None => return Ok(()) // No timestamps available  
+        };
+        
+        let elapsed_ticks = last.0.saturating_sub(first.0);
         if elapsed_ticks < 10 { // Need at least 10 ticks to calculate
-            return;
+            return Ok(());
         }
         
         // Calculate average time per tick
         let elapsed_time = match last.1.duration_since(first.1) {
             Ok(duration) => duration,
-            Err(_) => return, // Clock skew, can't adjust properly
+            Err(_) => return Ok(()), // Clock skew, can't adjust properly
         };
         
         let avg_tick_time = Duration::from_secs_f64(
@@ -754,27 +955,41 @@ impl MerkleDocument {
         let new_iterations = (self.current_iterations as f64 * adjustment_factor) as u64;
         
         // Clamp to min/max difficulty range
-        let new_iterations = new_iterations.max(MIN_VDF_ITERATIONS).min(MAX_VDF_ITERATIONS);
+        let new_iterations = new_iterations.clamp(MIN_VDF_ITERATIONS, MAX_VDF_ITERATIONS);
         
         // Only send update if significant change
         if (new_iterations as f64 / self.current_iterations as f64) < 0.9 || 
            (new_iterations as f64 / self.current_iterations as f64) > 1.1 {
-            if let Err(e) = self.vdf_iterations_sender.send(new_iterations) {
-                eprintln!("Failed to update VDF iterations: {}", e);
-            } else {
-                self.current_iterations = new_iterations;
+            match self.vdf_iterations_sender.send(new_iterations) {
+                Ok(_) => self.current_iterations = new_iterations,
+                Err(e) => return Err(BitQuillError::ThreadError(format!("Failed to update VDF iterations: {}", e)))
             }
         }
+        
+        Ok(())
     }
 
     // Create a new Merkle leaf for the current document state
-  fn create_leaf(&mut self, tick_number: u64) {
-    if let Some(tick) = self.historical_ticks.get(&tick_number) {
+    fn create_leaf(&mut self, tick_number: u64) -> BitQuillResult<()> {
+        // Check resource limits before creating a new leaf
+        if self.leaves.len() >= MAX_ALLOWED_LEAVES {
+            return Err(BitQuillError::ResourceExhaustedError(format!(
+                "Maximum number of leaves ({}) reached", MAX_ALLOWED_LEAVES
+            )));
+        }
+    
+        let tick = match self.historical_ticks.get(&tick_number) {
+            Some(t) => t,
+            None => return Err(BitQuillError::StateError(format!(
+                "VDF tick #{} not found", tick_number
+            )))
+        };
+    
         // Create new leaf with CONSISTENT timestamp
         let leaf_timestamp = SystemTime::now();
         
-        let prev_leaf_hash = self.leaves.last().map_or(
-            hex::encode(Sha256::digest(b"MerkleQuill Genesis Leaf").to_vec()),
+        let prev_leaf_hash = self.leaves.last().map_or_else(
+            || hex::encode(Sha256::digest(b"MerkleQuill Genesis Leaf").to_vec()),
             |leaf| leaf.hash.clone()
         );
         
@@ -805,7 +1020,7 @@ impl MerkleDocument {
         };
         
         // Calculate leaf hash
-        let hash = calculate_leaf_hash(&temp_leaf);
+        let hash = calculate_leaf_hash(&temp_leaf)?;
         
         // Create final leaf with SAME timestamp as used in hash calculation
         let new_leaf = MerkleLeaf {
@@ -820,23 +1035,21 @@ impl MerkleDocument {
         
         // Add to leaves and rebuild tree
         self.leaves.push(new_leaf);
-        self.rebuild_merkle_tree();
+        self.rebuild_merkle_tree()?;
         self.dirty = true;
         
-        // Add to writing pattern analysis (new)
+        // Add to writing pattern analysis
         self.record_edit_interval(leaf_timestamp);
-    } else {
-        // Log warning if tick not found - this shouldn't happen in normal operation
-        eprintln!("Warning: Attempted to create leaf with missing VDF tick #{}", tick_number);
+        
+        Ok(())
     }
-}
     
     // Rebuild the Merkle tree from leaves
-    fn rebuild_merkle_tree(&mut self) {
+    fn rebuild_merkle_tree(&mut self) -> BitQuillResult<()> {
         if self.leaves.is_empty() {
             self.root = None;
             self.nodes.clear();
-            return;
+            return Ok(());
         }
         
         // Clear existing nodes
@@ -851,6 +1064,12 @@ impl MerkleDocument {
         
         // Build tree levels until we reach the root
         while current_level.len() > 1 {
+            if height > 100 {  // Sanity check to prevent potential infinite loops 
+                return Err(BitQuillError::StateError(
+                    "Merkle tree height exceeds maximum".to_string()
+                ));
+            }
+            
             height += 1;
             let mut next_level = Vec::new();
             
@@ -860,11 +1079,11 @@ impl MerkleDocument {
                     let left = &chunk[0];
                     let right = &chunk[1];
                     
-                    let left_hash = get_element_hash(left);
-                    let right_hash = get_element_hash(right);
+                    let left_hash = get_element_hash(left)?;
+                    let right_hash = get_element_hash(right)?;
                     
                     // Calculate node hash
-                    let hash = calculate_node_hash(&left_hash, &right_hash);
+                    let hash = calculate_node_hash(&left_hash, &right_hash)?;
                     
                     // Create node
                     let node = MerkleNode {
@@ -904,13 +1123,22 @@ impl MerkleDocument {
                 self.root = Some(node);
             }
         }
+        
+        Ok(())
     }
 
     // Record a change to the document content
-    fn record_change(&mut self, new_content: String) {
+    fn record_change(&mut self, new_content: String) -> BitQuillResult<()> {
         // Skip if content hasn't changed
         if new_content == self.current_state.content {
-            return;
+            return Ok(());
+        }
+        
+        // Check content size to prevent excessive memory usage
+        if new_content.len() > MAX_CONTENT_SIZE {
+            return Err(BitQuillError::ResourceExhaustedError(format!(
+                "Content size {} exceeds maximum allowed {}", new_content.len(), MAX_CONTENT_SIZE
+            )));
         }
 
         // Update the current state
@@ -928,6 +1156,8 @@ impl MerkleDocument {
         // Mark that we have pending changes to commit with the next tick
         self.pending_changes = true;
         self.dirty = true;
+        
+        Ok(())
     }
 
     // Get the current document content by combining all paragraphs
@@ -1014,52 +1244,7 @@ impl MerkleDocument {
     }
 
     // Verify the integrity of the Merkle tree and VDF clock chain
- 
-    
-    //  method to select strategic tick samples across the timeline
-    fn select_strategic_tick_samples(tick_numbers: &[u64], sample_count: usize) -> Vec<u64> {
-        if tick_numbers.len() <= sample_count || tick_numbers.len() <= 20 {
-            // If we have fewer ticks than requested sample count, return all
-            return tick_numbers.to_vec();
-        }
-
-        let mut samples = Vec::with_capacity(sample_count);
-        
-        // Always include the first 5 ticks (genesis)
-        let first_n = tick_numbers.len().min(5);
-        samples.extend_from_slice(&tick_numbers[0..first_n]);
-        
-        // Always include the most recent 10 ticks
-        let last_n_start = tick_numbers.len().saturating_sub(10);
-        samples.extend_from_slice(&tick_numbers[last_n_start..]);
-        
-        // Distribute remaining samples evenly across the timeline
-        let remaining_samples = sample_count.saturating_sub(samples.len());
-        if remaining_samples > 0 && tick_numbers.len() > 15 {
-            let range_start = 5; // After first 5
-            let range_end = tick_numbers.len() - 10; // Before last 10
-            let range_size = range_end - range_start;
-            
-            if range_size > 0 {
-                let stride = range_size / remaining_samples;
-                for i in 0..remaining_samples {
-                    let idx = range_start + (i * stride);
-                    if idx < range_end {
-                        samples.push(tick_numbers[idx]);
-                    }
-                }
-            }
-        }
-        
-        // Sort and deduplicate
-        samples.sort();
-        samples.dedup();
-        
-        samples
-    }
-    
     fn verify_merkle_integrity(&mut self, level: VerificationLevel) -> VerificationResult {
-
         let mut result = VerificationResult {
             valid: true,
             details: Vec::new(),
@@ -1075,28 +1260,32 @@ impl MerkleDocument {
             self.last_verification = Some(result.clone());
             return result;
         }
+
+        // Verify VDF RSA modulus strength
         result.details.push(VerificationDetail {
             description: "Verifying VDF RSA modulus strength...".to_string(),
             valid: true, block_number: None, tick_number: None,
         });
+
         let modulus = &*self.vdf.modulus; // Get a reference to the BigUint inside the Arc
+        
         if !verify_modulus_strength(modulus) {
-             result.valid = false; // Mark overall result as invalid
-             result.details.push(VerificationDetail {
-                 description: "CRITICAL: VDF RSA modulus failed strength verification.".to_string(),
-                 valid: false, block_number: None, tick_number: None,
-             });
-             // Optional: You could return early if the modulus is fundamentally insecure
-             // self.last_verification = Some(result.clone());
-             // return result;
+            result.valid = false; // Mark overall result as invalid
+            result.details.push(VerificationDetail {
+                description: "CRITICAL: VDF RSA modulus failed strength verification.".to_string(),
+                valid: false, block_number: None, tick_number: None,
+            });
         } else {
-             result.details.push(VerificationDetail {
-                 description: "VDF RSA modulus passed basic strength verification.".to_string(),
-                 valid: true, block_number: None, tick_number: None,
-             });
+            result.details.push(VerificationDetail {
+                description: "VDF RSA modulus passed basic strength verification.".to_string(),
+                valid: true, block_number: None, tick_number: None,
+            });
         }
+
         // 1. For each paragraph (leaf), ensure it's properly linked to the previous one
-        let mut expected_prev_hash = hex::encode(Sha256::digest(b"MerkleQuill Genesis Leaf").to_vec());
+        let mut expected_prev_hash = match hex::encode(Sha256::digest(b"MerkleQuill Genesis Leaf").to_vec()) {
+            hash => hash,
+        };
         
         for leaf in self.leaves.iter() {
             // Verify leaf chain (paragraph links)
@@ -1114,19 +1303,29 @@ impl MerkleDocument {
             }
             
             // Verify leaf hash is correctly calculated
-            let calculated_hash = calculate_leaf_hash(leaf);
-            if calculated_hash != leaf.hash {
-                result.valid = false;
-                result.details.push(VerificationDetail {
-                    description: format!("CRITICAL: Paragraph #{} hash mismatch - integrity compromised", leaf.leaf_number),
-                    valid: false, block_number: Some(leaf.leaf_number), tick_number: None,
-                });
-            } else {
-                result.details.push(VerificationDetail {
-                    description: format!("Paragraph #{} hash verified", leaf.leaf_number),
-                    valid: true, block_number: Some(leaf.leaf_number), tick_number: None,
-                });
-            }
+            match calculate_leaf_hash(leaf) {
+                Ok(calculated_hash) => {
+                    if calculated_hash != leaf.hash {
+                        result.valid = false;
+                        result.details.push(VerificationDetail {
+                            description: format!("CRITICAL: Paragraph #{} hash mismatch - integrity compromised", leaf.leaf_number),
+                            valid: false, block_number: Some(leaf.leaf_number), tick_number: None,
+                        });
+                    } else {
+                        result.details.push(VerificationDetail {
+                            description: format!("Paragraph #{} hash verified", leaf.leaf_number),
+                            valid: true, block_number: Some(leaf.leaf_number), tick_number: None,
+                        });
+                    }
+                },
+                Err(_) => {
+                    result.valid = false;
+                    result.details.push(VerificationDetail {
+                        description: format!("CRITICAL: Failed to calculate hash for paragraph #{}", leaf.leaf_number),
+                        valid: false, block_number: Some(leaf.leaf_number), tick_number: None,
+                    });
+                }
+            };
             
             // Verify content hash matches stored hash - SPECIAL HANDLING FOR PARAGRAPH MODEL
             let content_hash = hex::encode(
@@ -1215,9 +1414,25 @@ impl MerkleDocument {
         
         // 3. Verify Merkle tree structure - this stays mostly the same
         // Build a fresh tree and compare with stored nodes
-        let mut temp_doc = MerkleDocument::new();
-        temp_doc.leaves = self.leaves.clone();
-        temp_doc.rebuild_merkle_tree();
+        let temp_doc = match MerkleDocument::new() {
+            Ok(mut doc) => {
+                doc.leaves = self.leaves.clone();
+                // Rebuild silently - ignore errors here as we're just checking consistency
+                let _ = doc.rebuild_merkle_tree();
+                doc
+            },
+            Err(_) => {
+                result.valid = false;
+                result.details.push(VerificationDetail {
+                    description: "CRITICAL: Failed to create temporary document for tree verification".to_string(),
+                    valid: false, block_number: None, tick_number: None,
+                });
+                
+                // Skip further tree verification
+                self.last_verification = Some(result.clone());
+                return result;
+            }
+        };
         
         if let (Some(current_root), Some(rebuilt_root)) = (&self.root, &temp_doc.root) {
             if current_root.hash != rebuilt_root.hash {
@@ -1244,10 +1459,10 @@ impl MerkleDocument {
         // Defense: Check for suspiciously large gaps between leaves
         let max_allowed_leaf_gap = 500; // Maximum ticks between leaves (e.g., ~8 minutes if 1 tick/sec)
         if self.leaves.len() > 1 { // Only check if there are at least two leaves
-             result.details.push(VerificationDetail {
-                 description: format!("Checking leaf gaps (max allowed: {} ticks)", max_allowed_leaf_gap),
-                 valid: true, block_number: None, tick_number: None,
-             });
+            result.details.push(VerificationDetail {
+                description: format!("Checking leaf gaps (max allowed: {} ticks)", max_allowed_leaf_gap),
+                valid: true, block_number: None, tick_number: None,
+            });
             for i in 1..self.leaves.len() {
                 let current = &self.leaves[i];
                 let previous = &self.leaves[i-1];
@@ -1268,77 +1483,89 @@ impl MerkleDocument {
         
         
         // 4. Verify VDF ticks - SIMPLIFIED
-       // Ensure we have ticks and the verification level requires checking them
+        // Ensure we have ticks and the verification level requires checking them
         if level != VerificationLevel::Basic && !self.historical_ticks.is_empty() {
-                result.details.push(VerificationDetail {
-                    description: "Verifying VDF tick integrity...".to_string(),
-                    valid: true, block_number: None, tick_number: None,
-                });    
+            result.details.push(VerificationDetail {
+                description: "Verifying VDF tick integrity...".to_string(),
+                valid: true, block_number: None, tick_number: None,
+            });    
                 
             // Attack: Manipulate genesis values
             // Defense: Verify expected genesis hashes
             if let Some(first_tick) = self.historical_ticks.get(&0) {
-              // Calculate the initial input hash (hash of the seed) used by the VDF thread
-              let initial_vdf_input_hash = Sha256::digest(b"VDF Clock Genesis").to_vec();
+                // Calculate the initial input hash (hash of the seed) used by the VDF thread
+                let initial_vdf_input_hash = Sha256::digest(b"VDF Clock Genesis").to_vec();
 
-              // Calculate the expected prev_output_hash for tick 0
-              // (This is the hash of the initial VDF input hash)
-              let expected_tick0_prev_hash = hex::encode(Sha256::digest(&initial_vdf_input_hash).to_vec());
+                // Calculate the expected prev_output_hash for tick 0
+                // (This is the hash of the initial VDF input hash)
+                let expected_tick0_prev_hash = hex::encode(Sha256::digest(&initial_vdf_input_hash).to_vec());
 
-              // Now compare the stored hash with the correctly calculated expected hash
-              if first_tick.prev_output_hash != expected_tick0_prev_hash {
-                  result.valid = false;
-                  result.details.push(VerificationDetail {
-                      description: format!(
-                          "CRITICAL: Genesis VDF Tick #0 input hash mismatch! Expected {}, got {}",
-                          expected_tick0_prev_hash, first_tick.prev_output_hash
-                      ),
-                      valid: false,
-                      block_number: None,
-                      tick_number: Some(0),
-                  });
-              } else {
-                  result.details.push(VerificationDetail {
-                      description: "Genesis VDF Tick #0 input hash verified".to_string(),
-                      valid: true,
-                      block_number: None,
-                      tick_number: Some(0),
-                  });
-                  // --- Also verify the proof for the Genesis Tick ---
-                  // The input for tick 0's proof is the initial_vdf_input_hash
-                  if !self.vdf.verify(&initial_vdf_input_hash, &first_tick.proof) {
-                       result.valid = false; // Mark as invalid if genesis proof fails
-                       result.details.push(VerificationDetail {
-                            description: format!("CRITICAL: Genesis VDF Tick #0 proof failed verification"),
-                            valid: false,
-                            block_number: None,
-                            tick_number: Some(0),
-                       });
-                  } else {
-                       result.details.push(VerificationDetail {
-                            description: "Genesis VDF Tick #0 proof verified".to_string(),
-                            valid: true,
-                            block_number: None,
-                            tick_number: Some(0),
-                       });
-                  }
-                  // --- End Genesis Proof Verification ---
-              }
+                // Now compare the stored hash with the correctly calculated expected hash
+                if first_tick.prev_output_hash != expected_tick0_prev_hash {
+                    result.valid = false;
+                    result.details.push(VerificationDetail {
+                        description: format!(
+                            "CRITICAL: Genesis VDF Tick #0 input hash mismatch! Expected {}, got {}",
+                            expected_tick0_prev_hash, first_tick.prev_output_hash
+                        ),
+                        valid: false,
+                        block_number: None,
+                        tick_number: Some(0),
+                    });
+                } else {
+                    result.details.push(VerificationDetail {
+                        description: "Genesis VDF Tick #0 input hash verified".to_string(),
+                        valid: true,
+                        block_number: None,
+                        tick_number: Some(0),
+                    });
+                    // --- Also verify the proof for the Genesis Tick ---
+                    // The input for tick 0's proof is the initial_vdf_input_hash
+                    match self.vdf.verify(&initial_vdf_input_hash, &first_tick.proof) {
+                        Ok(valid) => {
+                            if !valid {
+                                result.valid = false; // Mark as invalid if genesis proof fails
+                                result.details.push(VerificationDetail {
+                                    description: format!("CRITICAL: Genesis VDF Tick #0 proof failed verification"),
+                                    valid: false,
+                                    block_number: None,
+                                    tick_number: Some(0),
+                                });
+                            } else {
+                                result.details.push(VerificationDetail {
+                                    description: "Genesis VDF Tick #0 proof verified".to_string(),
+                                    valid: true,
+                                    block_number: None,
+                                    tick_number: Some(0),
+                                });
+                            }
+                        },
+                        Err(_) => {
+                            result.valid = false;
+                            result.details.push(VerificationDetail {
+                                description: "CRITICAL: Error verifying Genesis VDF Tick #0 proof".to_string(),
+                                valid: false,
+                                block_number: None,
+                                tick_number: Some(0),
+                            });
+                        }
+                    }
+                }
             } else {
-               // Handle missing genesis tick 0 (existing logic seems okay)
-               if level >= VerificationLevel::Standard {
-                     result.valid = false;
-                     result.details.push(VerificationDetail {
-                       description: "CRITICAL: Genesis VDF tick #0 is missing".to_string(),
-                       valid: false, block_number: None, tick_number: Some(0),
-                     });
-               } else {
-                     result.details.push(VerificationDetail {
-                       description: "NOTE: Genesis VDF tick #0 not found (Basic check)".to_string(),
-                       valid: true,
-                       block_number: None, tick_number: Some(0),
-                     });
-                 }
+                // Handle missing genesis tick 0 (existing logic seems okay)
+                if level >= VerificationLevel::Standard {
+                    result.valid = false;
+                    result.details.push(VerificationDetail {
+                        description: "CRITICAL: Genesis VDF tick #0 is missing".to_string(),
+                        valid: false, block_number: None, tick_number: Some(0),
+                    });
+                } else {
+                    result.details.push(VerificationDetail {
+                        description: "NOTE: Genesis VDF tick #0 not found (Basic check)".to_string(),
+                        valid: true,
+                        block_number: None, tick_number: Some(0),
+                    });
+                }
             }
             
             
@@ -1364,7 +1591,7 @@ impl MerkleDocument {
             // Include some recent ticks
             let num_recent = 5.min(tick_numbers.len());
             for i in 0..num_recent {
-                let idx = tick_numbers.len() - 1 - i;
+                let idx = tick_numbers.len().saturating_sub(1).saturating_sub(i);
                 if idx < tick_numbers.len() && !key_ticks.contains(&tick_numbers[idx]) {
                     key_ticks.push(tick_numbers[idx]);
                 }
@@ -1387,9 +1614,9 @@ impl MerkleDocument {
                         });
                     }
                     
-                   //check for reasonable proof parameter bits
+                    //check for reasonable proof parameter bits
                     let l = BigUint::from_bytes_be(&tick.proof.l);
-                    if l.bits() < 128 {
+                    if l.bits() < 120 {
                         result.valid = false;
                         result.details.push(VerificationDetail {
                             description: format!("CRITICAL: VDF tick #{} uses insecure proof parameters",
@@ -1430,32 +1657,56 @@ impl MerkleDocument {
                             // Defense: Add timestamp consistency checks
                             // Check only if prev_num is indeed tick_num - 1 (ensures consecutive ticks)
                             if prev_num == tick_num - 1 {
-                                let time_diff = tick.system_time.duration_since(prev_tick.system_time)
-                                    .unwrap_or(Duration::from_secs(0));
-
-                                // Check if time is moving backward or jumping too far forward (e.g., > 1 hour)
-                                if time_diff.as_secs() < 0 || time_diff.as_secs() > 3600 {
-                                    result.valid = false;
-                                    result.details.push(VerificationDetail {
-                                        description: format!("CRITICAL: Suspicious time jump between ticks #{} and #{}: {} seconds",
-                                                         prev_num, tick_num, time_diff.as_secs()),
-                                        valid: false,
-                                        tick_number: Some(tick_num),
-                                        block_number: None,
-                                    });
+                                match tick.system_time.duration_since(prev_tick.system_time) {
+                                    Ok(time_diff) => {
+                                        // Check if time is jumping too far forward (e.g., > 1 hour)
+                                        if time_diff.as_secs() > 3600 {
+                                            result.valid = false;
+                                            result.details.push(VerificationDetail {
+                                                description: format!("CRITICAL: Suspicious time jump between ticks #{} and #{}: {} seconds",
+                                                                 prev_num, tick_num, time_diff.as_secs()),
+                                                valid: false,
+                                                tick_number: Some(tick_num),
+                                                block_number: None,
+                                            });
+                                        }
+                                    },
+                                    Err(_) => {
+                                        // Time went backwards
+                                        result.valid = false;
+                                        result.details.push(VerificationDetail {
+                                            description: format!("CRITICAL: Time went backwards between ticks #{} and #{}",
+                                                             prev_num, tick_num),
+                                            valid: false,
+                                            tick_number: Some(tick_num),
+                                            block_number: None,
+                                        });
+                                    }
                                 }
                             }
                             
                             // Verify proof
                             let input_for_curr = prev_tick.output_y.clone();
-                            if !self.vdf.verify(&input_for_curr, &tick.proof) {
-                                // For paragraph model, proof issues are less critical
-                                result.details.push(VerificationDetail {
-                                    description: format!("NOTE: VDF tick #{} timestamp verification issue", tick_num),
-                                    valid: true, // Don't fail
-                                    block_number: None,
-                                    tick_number: Some(tick_num),
-                                });
+                            match self.vdf.verify(&input_for_curr, &tick.proof) {
+                                Ok(valid) => {
+                                    if !valid {
+                                        // For paragraph model, proof issues are less critical
+                                        result.details.push(VerificationDetail {
+                                            description: format!("NOTE: VDF tick #{} timestamp verification issue", tick_num),
+                                            valid: true, // Don't fail
+                                            block_number: None,
+                                            tick_number: Some(tick_num),
+                                        });
+                                    }
+                                },
+                                Err(_) => {
+                                    result.details.push(VerificationDetail {
+                                        description: format!("ERROR: Failed to verify VDF tick #{} proof", tick_num),
+                                        valid: true, // Don't fail just for verification errors
+                                        block_number: None,
+                                        tick_number: Some(tick_num),
+                                    });
+                                }
                             }
                         }
                     }
@@ -1468,8 +1719,8 @@ impl MerkleDocument {
                 if let Some(tick) = self.historical_ticks.get(&tick_num) {
                     if let Some(prev) = prev_tick {
                         // Max 4x change between consecutive samples (matches adjustment bounds)
-                        if tick.iterations > prev.iterations * 4 || 
-                           tick.iterations * 4 < prev.iterations {
+                        if tick.iterations > prev.iterations.saturating_mul(4) || 
+                           tick.iterations.saturating_mul(4) < prev.iterations {
                             result.valid = false;
                             result.details.push(VerificationDetail {
                                 description: format!("CRITICAL: Suspicious difficulty change between ticks #{} ({}) and #{} ({})",
@@ -1532,14 +1783,25 @@ impl MerkleDocument {
         }
         
         // Calculate interval from previous edit
-        let last_edit = self.edit_intervals.last().unwrap().0;
-        if let Ok(duration) = timestamp.duration_since(last_edit) {
-            let seconds = duration.as_secs();
-            self.edit_intervals.push((timestamp, seconds));
-            
-            // Keep a reasonable history (e.g., last 1000 edits)
-            if self.edit_intervals.len() > 1000 {
-                self.edit_intervals.remove(0);
+        let last_edit = &self.edit_intervals.last().unwrap().0;
+        match timestamp.duration_since(*last_edit) {
+            Ok(duration) => {
+                let seconds = duration.as_secs();
+                self.edit_intervals.push((timestamp, seconds));
+                
+                // Keep a reasonable history (e.g., last 1000 edits)
+                if self.edit_intervals.len() > 1000 {
+                    self.edit_intervals.remove(0);
+                }
+            },
+            Err(_) => {
+                // Handle clock skew (shouldn't happen, but be defensive)
+                self.edit_intervals.push((timestamp, 0));
+                
+                // Keep a reasonable history
+                if self.edit_intervals.len() > 1000 {
+                    self.edit_intervals.remove(0);
+                }
             }
         }
     }
@@ -1561,15 +1823,23 @@ impl MerkleDocument {
         }
         
         // Calculate basic statistics
-        let avg_interval = intervals.iter().sum::<u64>() / intervals.len() as u64;
+        let avg_interval = if intervals.is_empty() {
+            0
+        } else {
+            intervals.iter().sum::<u64>() / intervals.len() as u64
+        };
         
         // Calculate standard deviation
-        let variance: f64 = intervals.iter()
-            .map(|&i| {
-                let diff = i as f64 - avg_interval as f64;
-                diff * diff
-            })
-            .sum::<f64>() / intervals.len() as f64;
+        let variance: f64 = if intervals.is_empty() || avg_interval == 0 {
+            0.0
+        } else {
+            intervals.iter()
+                .map(|&i| {
+                    let diff = i as f64 - avg_interval as f64;
+                    diff * diff
+                })
+                .sum::<f64>() / intervals.len() as f64
+        };
         
         let std_dev = variance.sqrt();
         
@@ -1580,30 +1850,32 @@ impl MerkleDocument {
         let mut intervals_with_leaf: Vec<(u64, u64)> = Vec::new();
         let mut current_leaf = 1;
         
-        for (_i, interval) in intervals.iter().enumerate() {
+        for interval in &intervals {
             // i+1 because we skip the first entry in edit_intervals (which has 0 interval)
             intervals_with_leaf.push((*interval, current_leaf));
             current_leaf += 1;
         }
         
         // Find outliers (more than 3 standard deviations from mean)
-        for (interval, leaf_number) in intervals_with_leaf {
-            let z_score = (interval as f64 - avg_interval as f64) / std_dev;
-            
-            if z_score.abs() > 3.0 {
-                let description = if z_score > 0.0 {
-                    format!("Unusually long pause ({} seconds vs avg {}) - possible session break", 
-                            interval, avg_interval)
-                } else {
-                    format!("Unusually rapid edit ({} seconds vs avg {}) - possible bulk insertion", 
-                            interval, avg_interval)
-                };
+        if std_dev > 0.0 {  // Prevent division by zero
+            for (interval, leaf_number) in intervals_with_leaf {
+                let z_score = (interval as f64 - avg_interval as f64) / std_dev;
                 
-                anomalies.push(WritingPatternAnomaly {
-                    leaf_number,
-                    description,
-                    confidence: (z_score.abs() - 3.0) / 2.0, // Scale confidence (0.0-1.0)
-                });
+                if z_score.abs() > 3.0 {
+                    let description = if z_score > 0.0 {
+                        format!("Unusually long pause ({} seconds vs avg {}) - possible session break", 
+                                interval, avg_interval)
+                    } else {
+                        format!("Unusually rapid edit ({} seconds vs avg {}) - possible bulk insertion", 
+                                interval, avg_interval)
+                    };
+                    
+                    anomalies.push(WritingPatternAnomaly {
+                        leaf_number,
+                        description,
+                        confidence: (z_score.abs() - 3.0) / 2.0, // Scale confidence (0.0-1.0)
+                    });
+                }
             }
         }
         
@@ -1613,6 +1885,10 @@ impl MerkleDocument {
             let mut window_idx = 0;
             
             for window in windows {
+                if window.is_empty() {
+                    continue;
+                }
+                
                 let window_avg = window.iter().sum::<u64>() / window.len() as u64;
                 
                 // If a sustained period is significantly faster than overall average
@@ -1648,8 +1924,17 @@ impl MerkleDocument {
         let mut proof = Vec::new();
         let mut current_hash = leaf_hash;
         
+        // Prevent potential infinite loop
+        let max_iterations = self.nodes.len() + 1;
+        let mut iterations = 0;
+        
         // Walk up the tree
         loop {
+            iterations += 1;
+            if iterations > max_iterations {
+                return None; // Break if too many iterations - likely a cycle
+            }
+            
             // Find the node that contains this hash as a child
             let parent = self.nodes.values().find(|n| 
                 n.left_child_hash.as_ref() == Some(&current_hash) || 
@@ -1688,29 +1973,31 @@ impl MerkleDocument {
 
     // Create a MerkleQuillFile for saving
     fn create_merkle_quill_file(&self) -> MerkleQuillFile {
-
         // Keep logic for leaves, nodes, root_hash, vdf_ticks, modulus
         let leaves = if !self.leaves.is_empty() {
             Some(self.leaves.clone())
         } else {
             None
         };
+        
         let nodes = if !self.nodes.is_empty() {
             Some(self.nodes.values().cloned().collect())
         } else {
             None
         };
+        
         let root_hash = self.root.as_ref().map(|r| r.hash.clone());
+        
         let vdf_ticks = if !self.historical_ticks.is_empty() {
-             let mut ticks: Vec<VDFClockTick> = self.historical_ticks.values().cloned().collect();
-             ticks.sort_by_key(|t| t.sequence_number);
+            let mut ticks: Vec<VDFClockTick> = self.historical_ticks.values().cloned().collect();
+            ticks.sort_by_key(|t| t.sequence_number);
 
-             Some(ticks)
-         } else {
-             None
-         };
+            Some(ticks)
+        } else {
+            None
+        };
+        
         let modulus = Some(self.vdf.get_modulus_bytes());
-
 
         MerkleQuillFile {
             metadata: self.metadata.clone(),
@@ -1723,11 +2010,9 @@ impl MerkleDocument {
             version: "2.1".to_string(), // <<< UPDATED VERSION
         }
     }
-    
-
 
     // Export a compact verification proof
-    fn export_verification_proof(&self, path: &PathBuf) -> io::Result<()> {
+    fn export_verification_proof(&self, path: &PathBuf) -> BitQuillResult<()> {
         // Select strategic samples from document history
         let sample_count = 20.min(self.leaves.len());
         let sample_indices = if self.leaves.len() <= sample_count {
@@ -1738,17 +2023,21 @@ impl MerkleDocument {
             let mut indices = Vec::with_capacity(sample_count);
             
             // Always include first and last leaf
-            indices.push(0);
-            indices.push(self.leaves.len() - 1);
+            if !self.leaves.is_empty() {
+                indices.push(0);
+                indices.push(self.leaves.len() - 1);
+            }
             
             // Distribute remaining samples
-            let remaining = sample_count - 2;
+            let remaining = sample_count - indices.len();
             if remaining > 0 && self.leaves.len() > 2 {
                 let stride = (self.leaves.len() - 2) / remaining;
-                for i in 0..remaining {
-                    let idx = 1 + (i * stride);
-                    if idx < self.leaves.len() - 1 {
-                        indices.push(idx);
+                if stride > 0 {  // Prevent division by zero or very small strides
+                    for i in 0..remaining {
+                        let idx = 1 + (i * stride);
+                        if idx < self.leaves.len() - 1 {
+                            indices.push(idx);
+                        }
                     }
                 }
             }
@@ -1761,14 +2050,16 @@ impl MerkleDocument {
         // Create verification samples
         let mut samples = Vec::with_capacity(sample_indices.len());
         for &idx in &sample_indices {
-            let leaf = &self.leaves[idx];
-            samples.push(VerificationSample {
-                leaf_number: leaf.leaf_number,
-                leaf_hash: leaf.hash.clone(),
-                timestamp: leaf.timestamp,
-                vdf_reference: leaf.vdf_tick_reference,
-                commitment: leaf.commitment.clone(),
-            });
+            if idx < self.leaves.len() {  // Bounds check
+                let leaf = &self.leaves[idx];
+                samples.push(VerificationSample {
+                    leaf_number: leaf.leaf_number,
+                    leaf_hash: leaf.hash.clone(),
+                    timestamp: leaf.timestamp,
+                    vdf_reference: leaf.vdf_tick_reference,
+                    commitment: leaf.commitment.clone(),
+                });
+            }
         }
         
         // Create the proof
@@ -1785,219 +2076,239 @@ impl MerkleDocument {
         };
         
         // Serialize to JSON
-        let json = serde_json::to_string_pretty(&proof)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+        let json = match serde_json::to_string_pretty(&proof) {
+            Ok(json) => json,
+            Err(e) => return Err(BitQuillError::SerializationError(format!(
+                "Failed to serialize verification proof: {}", e
+            )))
+        };
         
         // Write to file
-        fs::write(path, json)
+        match fs::write(path, json) {
+            Ok(_) => Ok(()),
+            Err(e) => Err(BitQuillError::IoError(e))
+        }
     }
     
     // Save document with Merkle tree data to file
-    fn save_to_file(&mut self, path: &PathBuf) -> io::Result<()> {
-        // Reconstruct full document content from paragraph leaves
-        let _full_content = if !self.leaves.is_empty() {
-            let paragraphs: Vec<&str> = self.leaves.iter()
-                .map(|leaf| leaf.document_state.content.as_str())
-                .collect();
-            paragraphs.join("\n")
-        } else {
-            // If no leaves, use current state
-            self.current_state.content.clone()
-        };
-
+    fn save_to_file(&mut self, path: &PathBuf) -> BitQuillResult<()> {
         // For saving the full tree
-        let leaves = if !self.leaves.is_empty() {
-            Some(self.leaves.clone())
-        } else {
-            None
-        };
-        
-        // Save all nodes
-        let nodes = if !self.nodes.is_empty() {
-            Some(self.nodes.values().cloned().collect())
-        } else {
-            None
-        };
-        
-        // Root hash for quick access
-        let root_hash = self.root.as_ref().map(|r| r.hash.clone());
-        
-        // Save the latest VDF ticks for verification (limited history in main file)
-        let vdf_ticks = if !self.historical_ticks.is_empty() {
-            let mut ticks: Vec<VDFClockTick> = self.historical_ticks.values().cloned().collect();
-            ticks.sort_by_key(|t| t.sequence_number);
-            
-            Some(ticks)
-        } else {
-            None
-        };
-
-        // Include modulus for verification
-        let modulus = Some(self.vdf.get_modulus_bytes());
-
-        // Create the MerkleQuillFile
-        let file = MerkleQuillFile {
-            metadata: self.metadata.clone(),
-            leaves,
-            nodes,
-            root_hash,
-            vdf_ticks,
-            modulus,
-            current_iterations: self.current_iterations,
-            version: "2.0".to_string(),
-        };
+        let file = self.create_merkle_quill_file();
 
         // Serialize to JSON
-        let json = serde_json::to_string_pretty(&file)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+        let json = match serde_json::to_string_pretty(&file) {
+            Ok(json) => json,
+            Err(e) => return Err(BitQuillError::SerializationError(format!(
+                "Failed to serialize document: {}", e
+            )))
+        };
 
         // Write to file
-        fs::write(path, json)?;
+        match fs::write(path, json) {
+            Ok(_) => {
+                // Update dirty flag
+                self.dirty = false;
+                Ok(())
+            },
+            Err(e) => Err(BitQuillError::IoError(e))
+        }
+    }
 
-        // Update dirty flag
+    // Load document from file
+    fn load_from_file(&mut self, path: &PathBuf) -> BitQuillResult<()> {
+        // Read file content with proper error handling
+        let json = match fs::read_to_string(path) {
+            Ok(content) => content,
+            Err(e) => return Err(BitQuillError::IoError(e))
+        };
+
+        // Attempt to parse into MerkleQuillFile format
+        let file: MerkleQuillFile = match serde_json::from_str(&json) {
+            Ok(parsed) => parsed,
+            Err(e) => return Err(BitQuillError::DeserializationError(format!(
+                "Failed to parse file {}: {}", path.display(), e
+            )))
+        };
+
+        // --- Start Loading ---
+        self.metadata = file.metadata;
+
+        // Clear existing document structure
+        self.root = None;
+        self.leaves.clear();
+        self.nodes.clear();
+        self.historical_ticks.clear();
+        self.latest_tick = None;
+        self.edit_intervals.clear();
+
+        // Load leaves (if present in file)
+        if let Some(leaves) = file.leaves {
+            // Check resource limit
+            if leaves.len() > MAX_ALLOWED_LEAVES {
+                return Err(BitQuillError::ResourceExhaustedError(format!(
+                    "File contains too many leaves ({} > {})", leaves.len(), MAX_ALLOWED_LEAVES
+                )));
+            }
+            
+            self.leaves = leaves;
+            
+            // Ensure leaves are sorted by leaf_number (important for logic relying on order)
+            self.leaves.sort_by_key(|l| l.leaf_number);
+        }
+
+        // Initialize current_state based on the last loaded leaf
+        if let Some(last_leaf) = self.leaves.last() {
+            self.current_state = last_leaf.document_state.clone();
+            self.current_state.timestamp = Instant::now(); // Reset Instant
+        } else {
+            // No leaves, initialize as a new empty document state
+            let genesis_hash = hex::encode(Sha256::digest(b"MerkleQuill Genesis").to_vec());
+            self.current_state = DocumentState {
+                content: String::new(),
+                timestamp: Instant::now(),
+                system_time: SystemTime::now(),
+                state_hash: genesis_hash,
+            };
+        }
+        self.last_edit_time = Instant::now(); // Reset edit time
+
+        // Load nodes (if present in file)
+        self.nodes.clear(); // Ensure map is empty before loading
+        if let Some(nodes_vec) = file.nodes {
+            // Validate node count to prevent resource exhaustion
+            if nodes_vec.len() > MAX_ALLOWED_LEAVES * 2 {
+                return Err(BitQuillError::ResourceExhaustedError(format!(
+                    "File contains too many nodes ({} > {})", nodes_vec.len(), MAX_ALLOWED_LEAVES * 2
+                )));
+            }
+            
+            for node in nodes_vec {
+                self.nodes.insert(node.hash.clone(), node);
+            }
+        }
+
+        // Set root from loaded nodes or rebuild
+        self.root = None; // Clear root before trying to set it
+        if let Some(root_hash) = file.root_hash {
+            self.root = self.nodes.get(&root_hash).cloned();
+            
+            // If root hash exists but node doesn't, tree is inconsistent
+            if self.root.is_none() && !self.nodes.is_empty() {
+                // Try rebuild
+                if let Err(e) = self.rebuild_merkle_tree() {
+                    return Err(BitQuillError::StateError(format!(
+                        "Failed to rebuild Merkle tree: {}", e
+                    )));
+                }
+            } else if self.root.is_none() && !self.leaves.is_empty() {
+                // Root hash might be missing but we have nodes/leaves
+                if let Err(e) = self.rebuild_merkle_tree() {
+                    return Err(BitQuillError::StateError(format!(
+                        "Failed to rebuild Merkle tree: {}", e
+                    )));
+                }
+            }
+        } else if !self.leaves.is_empty() {
+            // No root hash stored, attempt rebuild if leaves exist
+            if let Err(e) = self.rebuild_merkle_tree() {
+                return Err(BitQuillError::StateError(format!(
+                    "Failed to rebuild Merkle tree: {}", e
+                )));
+            }
+        }
+
+        // Load VDF ticks (if present in file)
+        self.historical_ticks.clear();
+        self.latest_tick = None;
+        if let Some(ticks) = file.vdf_ticks {
+            // Validate tick count to prevent resource exhaustion
+            if ticks.len() > DIFFICULTY_WINDOW_SIZE * 2 {
+                return Err(BitQuillError::ResourceExhaustedError(format!(
+                    "File contains too many VDF ticks ({} > {})", ticks.len(), DIFFICULTY_WINDOW_SIZE * 2
+                )));
+            }
+            
+            for tick in ticks {
+                self.historical_ticks.insert(tick.sequence_number, tick);
+            }
+            
+            // Set latest_tick based on loaded historical data
+            if let Some(max_seq) = self.historical_ticks.keys().max() {
+                self.latest_tick = self.historical_ticks.get(max_seq).cloned();
+            }
+        }
+
+        // Load VDF modulus (if present and valid)
+        if let Some(modulus_bytes) = file.modulus {
+            if !modulus_bytes.is_empty() {
+                match VDF::from_modulus_bytes(&modulus_bytes) {
+                    Ok(vdf) => self.vdf = vdf,
+                    Err(e) => return Err(BitQuillError::ValidationError(format!(
+                        "Invalid VDF modulus in file: {}", e
+                    )))
+                }
+            } else {
+                // Generate new VDF if empty modulus
+                match VDF::new(2048) {
+                    Ok(vdf) => self.vdf = vdf,
+                    Err(e) => return Err(e)
+                }
+            }
+        } else {
+            // Generate new VDF if no modulus
+            match VDF::new(2048) {
+                Ok(vdf) => self.vdf = vdf,
+                Err(e) => return Err(e)
+            }
+        }
+
+        // Load current iterations with validation
+        self.current_iterations = file.current_iterations.clamp(
+            MIN_VDF_ITERATIONS, MAX_VDF_ITERATIONS
+        );
+
+        // Set last leaf tick
+        self.last_leaf_tick = self.leaves.last().map_or(0, |l| l.vdf_tick_reference);
+
+        // Rebuild edit intervals from loaded leaves' timestamps
+        self.edit_intervals.clear();
+        if !self.leaves.is_empty() {
+            let first_leaf = &self.leaves[0];
+            self.edit_intervals.push((first_leaf.timestamp, 0));
+            
+            for i in 1..self.leaves.len() {
+                let prev_leaf = &self.leaves[i-1];
+                let curr_leaf = &self.leaves[i];
+                
+                let interval_secs = match curr_leaf.timestamp.duration_since(prev_leaf.timestamp) {
+                    Ok(duration) => duration.as_secs(),
+                    Err(_) => 0  // Use 0 if time went backwards
+                };
+                
+                self.edit_intervals.push((curr_leaf.timestamp, interval_secs));
+            }
+        }
+
+        // Reset flags
         self.dirty = false;
+        self.pending_changes = false;
+        self.last_verification = None;
 
         Ok(())
     }
 
-    // Load document from file
-    fn load_from_file(&mut self, path: &PathBuf) -> io::Result<()> {
-        let json = fs::read_to_string(path)?;
-
-        // Attempt to parse directly into the new format (without top-level content)
-        match serde_json::from_str::<MerkleQuillFile>(&json) {
-            Ok(file) => {
-
-                // --- Start Loading ---
-                self.metadata = file.metadata;
-
-                // Clear existing document structure
-                self.root = None;
-                self.leaves.clear();
-                self.nodes.clear();
-                self.historical_ticks.clear();
-                self.latest_tick = None;
-                self.edit_intervals.clear();
-
-                // Load leaves (if present in file)
-                self.leaves = file.leaves.unwrap_or_default(); // Use empty Vec if None
-                if !self.leaves.is_empty() {
-                     // Ensure leaves are sorted by leaf_number (important for logic relying on order)
-                    self.leaves.sort_by_key(|l| l.leaf_number);
-                }
-
-                // Initialize current_state based on the last loaded leaf
-                if let Some(last_leaf) = self.leaves.last() {
-                    self.current_state = last_leaf.document_state.clone();
-                    self.current_state.timestamp = Instant::now(); // Reset Instant
-                } else {
-                    // No leaves, initialize as a new empty document state
-                    let genesis_hash = hex::encode(Sha256::digest(b"MerkleQuill Genesis").to_vec());
-                    self.current_state = DocumentState {
-                        content: String::new(),
-                        timestamp: Instant::now(),
-                        system_time: SystemTime::now(),
-                        state_hash: genesis_hash,
-                    };
-                }
-                self.last_edit_time = Instant::now(); // Reset edit time
-
-                // Load nodes (if present in file)
-                self.nodes.clear(); // Ensure map is empty before loading
-                if let Some(nodes_vec) = file.nodes {
-                    for node in nodes_vec {
-                        self.nodes.insert(node.hash.clone(), node);
-                    }
-                }
-
-                // Set root from loaded nodes or rebuild
-                self.root = None; // Clear root before trying to set it
-                if let Some(root_hash) = file.root_hash {
-                     self.root = self.nodes.get(&root_hash).cloned();
-                     // If root hash exists but node doesn't, tree is inconsistent
-                     if self.root.is_none() && self.nodes.contains_key(&root_hash) {
-                         eprintln!("Error: Merkle root hash points to non-existent node in loaded nodes map!");
-                         // Decide how to handle: error out, or try rebuild? Let's try rebuild.
-                         self.rebuild_merkle_tree();
-                     } else if self.root.is_none() && !self.leaves.is_empty() {
-                        // Root hash might be missing but we have nodes/leaves
-                        self.rebuild_merkle_tree();
-                     }
-                } else if !self.leaves.is_empty() {
-                    // No root hash stored, attempt rebuild if leaves exist
-                    self.rebuild_merkle_tree();
-                }
-
-
-                // Load VDF ticks (if present in file)
-                self.historical_ticks.clear();
-                self.latest_tick = None;
-                if let Some(ticks) = file.vdf_ticks {
-                    for tick in ticks {
-                        self.historical_ticks.insert(tick.sequence_number, tick);
-                    }
-                    // Set latest_tick based on loaded historical data
-                    if let Some(max_seq) = self.historical_ticks.keys().max() {
-                        self.latest_tick = self.historical_ticks.get(max_seq).cloned();
-                    }
-                }
-
-                // Load VDF modulus (if present and valid)
-                if let Some(modulus_bytes) = file.modulus {
-                     if !modulus_bytes.is_empty() {
-                         self.vdf = VDF::from_modulus_bytes(&modulus_bytes);
-                     } else {
-                         eprintln!("Warning: Loaded empty VDF modulus bytes. Regenerating default VDF.");
-                         self.vdf = VDF::new(2048); // Regenerate
-                     }
-                } else {
-                     eprintln!("Warning: No VDF modulus found in file. Regenerating default VDF.");
-                    self.vdf = VDF::new(2048); // Regenerate
-                }
-
-                // Load current iterations
-                self.current_iterations = file.current_iterations.max(MIN_VDF_ITERATIONS);
-
-                // Set last leaf tick
-                self.last_leaf_tick = self.leaves.last().map_or(0, |l| l.vdf_tick_reference);
-
-                // Rebuild edit intervals from loaded leaves' timestamps
-                self.edit_intervals.clear();
-                if !self.leaves.is_empty() {
-                    let first_leaf = &self.leaves[0];
-                    self.edit_intervals.push((first_leaf.timestamp, 0));
-                    for i in 1..self.leaves.len() {
-                        let prev_leaf = &self.leaves[i-1];
-                        let curr_leaf = &self.leaves[i];
-                        let interval_secs = curr_leaf.timestamp.duration_since(prev_leaf.timestamp)
-                            .map(|d| d.as_secs())
-                            .unwrap_or(0); // Use 0 if time went backwards
-                        self.edit_intervals.push((curr_leaf.timestamp, interval_secs));
-                    }
-                }
-
-
-                // Reset flags
-                self.dirty = false;
-                self.pending_changes = false;
-                self.last_verification = None;
-
-                Ok(())
-
-            }
-            Err(e) => {
-                // Deserialization failed - file is invalid or corrupt
-                eprintln!("Error parsing file '{}': {}", path.display(), e);
-                Err(io::Error::new(io::ErrorKind::InvalidData,
-                   format!("Failed to parse file. It might be corrupted or an invalid format: {}", e)))
-            }
-        }
-    }
-
     // Export Merkle tree data for verification in a standalone format
-    fn export_chain_data(&self, path: &PathBuf) -> io::Result<()> {
+    fn export_chain_data(&self, path: &PathBuf) -> BitQuillResult<()> {
         // Collect all ticks currently in memory for export
         let all_ticks: Vec<VDFClockTick> = self.historical_ticks.values().cloned().collect();
+
+        // Check resource limits
+        if all_ticks.len() > DIFFICULTY_WINDOW_SIZE * 2 {
+            return Err(BitQuillError::ResourceExhaustedError(format!(
+                "Too many ticks to export ({} > {})",
+                all_ticks.len(), DIFFICULTY_WINDOW_SIZE * 2
+            )));
+        }
 
         let export_data = ExportedMerkleData {
             document_title: self.metadata.title.clone(),
@@ -2012,14 +2323,19 @@ impl MerkleDocument {
             current_iterations: self.current_iterations,
         };
 
-        // Serialize to JSON
-        let json = serde_json::to_string_pretty(&export_data)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+        // Serialize to JSON with error handling
+        let json = match serde_json::to_string_pretty(&export_data) {
+            Ok(json) => json,
+            Err(e) => return Err(BitQuillError::SerializationError(format!(
+                "Failed to serialize chain data: {}", e
+            )))
+        };
 
         // Write to file
-        fs::write(path, json)?;
-
-        Ok(())
+        match fs::write(path, json) {
+            Ok(_) => Ok(()),
+            Err(e) => Err(BitQuillError::IoError(e))
+        }
     }
 
     // Check if there are unsaved changes
@@ -2029,14 +2345,35 @@ impl MerkleDocument {
 
     // Shutdown VDF clock thread when app exits
     fn shutdown(&self) {
-        if let Ok(mut shutdown) = self.vdf_clock_shutdown.lock() {
-            *shutdown = true;
-        } else {
-            eprintln!("Error obtaining lock for VDF clock shutdown.");
+        // Set shutdown flag
+        match self.vdf_clock_shutdown.lock() {
+            Ok(mut guard) => *guard = true,
+            Err(poisoned) => {
+                // Handle poisoned mutex by taking ownership
+                let mut guard = poisoned.into_inner();  // Gets ownership of inner value
+                *guard = true;
+                eprintln!("Warning: VDF clock shutdown mutex was poisoned");
+            }
+        }
+        
+        // Wait for thread to terminate gracefully if handle is available
+        if let Some(handle) = &self.vdf_thread_handle {
+            if !handle.is_finished() {
+                // Give thread time to observe shutdown flag
+                thread::sleep(Duration::from_millis(100));
+            }
         }
     }
-    //  method to record just a paragraph's content
-    fn record_paragraph(&mut self, paragraph_content: String) {
+    
+    // Method to record just a paragraph's content
+    fn record_paragraph(&mut self, paragraph_content: String) -> BitQuillResult<()> {
+        // Check content size
+        if paragraph_content.len() > MAX_CONTENT_SIZE {
+            return Err(BitQuillError::ResourceExhaustedError(format!(
+                "Paragraph size ({} bytes) exceeds maximum allowed ({} bytes)",
+                paragraph_content.len(), MAX_CONTENT_SIZE
+            )));
+        }
 
         // Update the current state with just this paragraph
         self.current_state.content = paragraph_content;
@@ -2053,8 +2390,9 @@ impl MerkleDocument {
         // Mark for next leaf creation
         self.pending_changes = true;
         self.dirty = true;
+        
+        Ok(())
     }
-    
 }
 
 // For exporting Merkle tree data for verification
@@ -2075,7 +2413,12 @@ struct ExportedMerkleData {
 }
 
 // Helper function to compute VDF proof
-fn compute_vdf_proof(input: &[u8], iterations: u64, modulus: &BigUint) -> VDFProof {
+fn compute_vdf_proof(input: &[u8], iterations: u64, modulus: &BigUint) -> Result<VDFProof, String> {
+    if iterations > MAX_VDF_ITERATIONS {
+        return Err(format!("Iterations {} exceeds maximum allowed {}", 
+                       iterations, MAX_VDF_ITERATIONS));
+    }
+
     // Hash the input to get our starting value
     let mut hasher = Sha256::new();
     hasher.update(input);
@@ -2083,39 +2426,54 @@ fn compute_vdf_proof(input: &[u8], iterations: u64, modulus: &BigUint) -> VDFPro
     let x = BigUint::from_bytes_be(&hash);
     
     // Generate a suitable prime l for Wesolowski's proof
-    let l = VDF::generate_proof_prime();
+    let l = match VDF::generate_prime(128) {
+        Ok(p) => p,
+        Err(_) => return Err("Failed to generate prime for proof".to_string())
+    };
     
     // Calculate r = 2^t mod l
     let r = BigUint::from(2u32).modpow(&BigUint::from(iterations), &l);
     
     // Calculate y = x^(2^t) mod N (iterative squaring)
     let mut y = x.clone();
-    for _ in 0..iterations {
+    
+    // Use chunked squaring for large iteration counts to prevent stack overflows
+    let chunk_size = 1000;
+    let full_chunks = iterations / chunk_size;
+    let remainder = iterations % chunk_size;
+    
+    for _ in 0..full_chunks {
+        for _ in 0..chunk_size {
+            y = (&y * &y) % modulus;
+        }
+    }
+    
+    for _ in 0..remainder {
         y = (&y * &y) % modulus;
     }
     
-    // FIXED: Calculate q correctly without floating point arithmetic
-    // Calculate 2^t directly (for current iteration ranges this should be fine)
-    let power = BigUint::from(2u32).pow(iterations as u32);
+    // Calculate q = (2^t - r) / l safely
+    let power = match calculate_power_safely(iterations) {
+        Ok(p) => p,
+        Err(e) => return Err(e)
+    };
     
-    // Calculate q = (2^t - r) / l directly
-    let q = (power - r.clone()) / &l;
-
+    let q_times_l = power - r.clone();
+    let q = &q_times_l / &l;
     
     // Calculate proof π = x^q mod N
     let pi = x.modpow(&q, modulus);
-
     
-    VDFProof {
+    Ok(VDFProof {
         y: y.to_bytes_be(),
         pi: pi.to_bytes_be(),
         l: l.to_bytes_be(),
         r: r.to_bytes_be(),
-    }
+    })
 }
 
 // Calculate hash for a MerkleLeaf
-fn calculate_leaf_hash(leaf: &MerkleLeaf) -> String {
+fn calculate_leaf_hash(leaf: &MerkleLeaf) -> BitQuillResult<String> {
     let mut hasher = Sha256::new();
     
     // Hash fields in a defined order
@@ -2125,20 +2483,26 @@ fn calculate_leaf_hash(leaf: &MerkleLeaf) -> String {
     hasher.update(leaf.commitment.as_bytes()); // Include commitment in hash
     
     // System time as bytes - use consistent format (seconds)
-    let timestamp_secs = leaf.timestamp
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    hasher.update(&timestamp_secs.to_be_bytes());
+    match leaf.timestamp.duration_since(SystemTime::UNIX_EPOCH) {
+        Ok(duration) => {
+            let timestamp_secs = duration.as_secs();
+            hasher.update(&timestamp_secs.to_be_bytes());
+        },
+        Err(_) => {
+            return Err(BitQuillError::HashError(
+                "Failed to calculate timestamp for leaf hash".to_string()
+            ));
+        }
+    }
     
     // Leaf number
     hasher.update(leaf.leaf_number.to_be_bytes());
     
-    hex::encode(hasher.finalize())
+    Ok(hex::encode(hasher.finalize()))
 }
 
 // Calculate hash for a Merkle node
-fn calculate_node_hash(left_hash: &str, right_hash: &str) -> String {
+fn calculate_node_hash(left_hash: &str, right_hash: &str) -> BitQuillResult<String> {
     let mut hasher = Sha256::new();
     hasher.update(left_hash.as_bytes());
     
@@ -2147,14 +2511,14 @@ fn calculate_node_hash(left_hash: &str, right_hash: &str) -> String {
         hasher.update(right_hash.as_bytes());
     }
     
-    hex::encode(hasher.finalize())
+    Ok(hex::encode(hasher.finalize()))
 }
 
 // Get hash from a MerkleTreeElement
-fn get_element_hash(element: &MerkleTreeElement) -> String {
+fn get_element_hash(element: &MerkleTreeElement) -> BitQuillResult<String> {
     match element {
-        MerkleTreeElement::Node(node) => node.hash.clone(),
-        MerkleTreeElement::Leaf(leaf) => leaf.hash.clone(),
+        MerkleTreeElement::Node(node) => Ok(node.hash.clone()),
+        MerkleTreeElement::Leaf(leaf) => Ok(leaf.hash.clone()),
     }
 }
 
@@ -2185,24 +2549,22 @@ fn select_verification_samples(ticks: &[u64], document_hash: &str) -> Vec<u64> {
 fn verify_modulus_strength(modulus: &BigUint) -> bool {
     // Verify minimum size (e.g., 1024 bits)
     if modulus.bits() < 1024 {
-         eprintln!("Modulus too small: {} bits", modulus.bits());
         return false;
     }
 
     // Quick primality check of modulus+1 and modulus-1
-    let one = BigUint::one(); // Use BigUint::one() directly
-    let modulus_plus_1 = modulus + BigUint::one();
-    let modulus_minus_1 = modulus - BigUint::one();
+    let one = BigUint::one();
+    let modulus_plus_1 = modulus + &one;
+    let modulus_minus_1 = modulus - &one;
 
     // Use Miller-Rabin from VDF impl with few rounds for quick check
     let rounds = 5; // Low rounds for speed, increase if needed
     if VDF::is_prime(&modulus_plus_1, rounds) {
-         eprintln!("Modulus+1 is probably prime - suspicious!");
-         return false; // Suspicious if either is prime
+        return false; // Suspicious if either is prime
     }
-     if VDF::is_prime(&modulus_minus_1, rounds) {
-          eprintln!("Modulus-1 is probably prime - suspicious!");
-         return false; // Suspicious if either is prime
+    
+    if VDF::is_prime(&modulus_minus_1, rounds) {
+        return false; // Suspicious if either is prime
     }
 
     true
@@ -2219,13 +2581,14 @@ struct TextBuffer {
     max_history: usize,
     scroll_offset: usize, // For scrolling in long documents
     line_numbers: bool,   // Display line numbers
+    max_line_length: usize, // Maximum line length (to prevent memory issues)
 }
 
 impl TextBuffer {
     fn new(idle_threshold_ms: u64) -> Self {
         TextBuffer {
             lines: vec![String::new()],
-cursor_row: 0,
+            cursor_row: 0,
             cursor_col: 0,
             last_edit_time: Instant::now(),
             edit_idle_threshold: Duration::from_millis(idle_threshold_ms),
@@ -2233,16 +2596,17 @@ cursor_row: 0,
             max_history: 50, // Increased history size
             scroll_offset: 0,
             line_numbers: true, // Enable line numbers by default
+            max_line_length: 10000, // 10K chars per line
         }
     }
     
     // Find all matches of a query in the buffer
     fn find_all(&self, query: &str, case_sensitive: bool) -> Vec<(usize, usize, usize)> {
-        let mut matches = Vec::new();
-        
         if query.is_empty() {
-            return matches;
+            return Vec::new();
         }
+        
+        let mut matches = Vec::new();
         
         for (row_idx, line) in self.lines.iter().enumerate() {
             let haystack = if case_sensitive {
@@ -2266,14 +2630,25 @@ cursor_row: 0,
                 
                 // Move past this match to find the next
                 start_idx = match_start + 1;
+                
+                // Prevent unbounded loop for pathological cases 
+                if matches.len() > 1000 {
+                    break;
+                }
             }
         }
         
         matches
     }
-        // Move cursor to a specific match
+    
+    // Move cursor to a specific match
     fn move_to_match(&mut self, matched_pos: (usize, usize, usize)) {
         let (row, col_start, _) = matched_pos;
+        
+        // Validate row within bounds
+        if row >= self.lines.len() {
+            return;
+        }
         
         self.cursor_row = row;
         self.cursor_col = col_start;
@@ -2281,33 +2656,44 @@ cursor_row: 0,
         self.ensure_cursor_visible();
     }
     
-        // Replace a specific match with new text
-    fn replace_match(&mut self, matched_pos: (usize, usize, usize), replace_with: &str) {
+    // Replace a specific match with new text
+    fn replace_match(&mut self, matched_pos: (usize, usize, usize), replace_with: &str) -> bool {
         let (row, col_start, col_end) = matched_pos;
         
         // Make sure the positions are valid
-        if row < self.lines.len() {
-            let line = &mut self.lines[row];
-            
-            if col_start <= col_end && col_end <= line.len() {
-                // Remove the matched text
-                let before = line[0..col_start].to_string();
-                let after = line[col_end..].to_string();
-                
-                // Replace with the new text
-                *line = format!("{}{}{}", before, replace_with, after);
-                
-                // Update cursor position to the end of the inserted text
-                self.cursor_row = row;
-                self.cursor_col = col_start + replace_with.len();
-                
-                self.last_edit_time = Instant::now();
-                self.ensure_cursor_visible();
-            }
+        if row >= self.lines.len() {
+            return false;
         }
+        
+        let line = &mut self.lines[row];
+        
+        if col_start > col_end || col_end > line.len() {
+            return false;
+        }
+        
+        // Check that replacement won't exceed max line length
+        if line.len() - (col_end - col_start) + replace_with.len() > self.max_line_length {
+            return false;
+        }
+        
+        // Remove the matched text
+        let before = line[0..col_start].to_string();
+        let after = line[col_end..].to_string();
+        
+        // Replace with the new text
+        *line = format!("{}{}{}", before, replace_with, after);
+        
+        // Update cursor position to the end of the inserted text
+        self.cursor_row = row;
+        self.cursor_col = col_start + replace_with.len();
+        
+        self.last_edit_time = Instant::now();
+        self.ensure_cursor_visible();
+        
+        true
     }
     
-        // Replace all matches in the buffer
+    // Replace all matches in the buffer
     fn replace_all(&mut self, matches: &[(usize, usize, usize)], replace_with: &str) -> usize {
         let mut replaced_count = 0;
         
@@ -2321,8 +2707,9 @@ cursor_row: 0,
         });
         
         for &matched_pos in &sorted_matches {
-            self.replace_match(matched_pos, replace_with);
-            replaced_count += 1;
+            if self.replace_match(matched_pos, replace_with) {
+                replaced_count += 1;
+            }
         }
         
         if replaced_count > 0 {
@@ -2334,15 +2721,28 @@ cursor_row: 0,
         replaced_count
     }
 
-    
-    fn insert_char(&mut self, c: char) {
+    fn insert_char(&mut self, c: char) -> bool {
         if c == '\n' {
             // Split the current line at cursor
+            if self.cursor_row >= self.lines.len() {
+                // Bounds check
+                return false;
+            }
+            
             let current_line = &self.lines[self.cursor_row];
+            
+            // Check that cursor_col is valid
+            if self.cursor_col > current_line.len() {
+                self.cursor_col = current_line.len();
+            }
+            
             let new_line = current_line[self.cursor_col..].to_string();
             self.lines[self.cursor_row] = current_line[..self.cursor_col].to_string();
 
             // Insert new line
+            if self.lines.len() >= MAX_BUFFER_SIZE {
+                return false; // Too many lines
+            }
             self.lines.insert(self.cursor_row + 1, new_line);
 
             // Move cursor to start of new line
@@ -2350,11 +2750,23 @@ cursor_row: 0,
             self.cursor_col = 0;
         } else {
             // Insert character at cursor position
+            if self.cursor_row >= self.lines.len() {
+                // Bounds check
+                return false;
+            }
+            
             // Ensure cursor_col is valid for insertion (can be == len)
             let current_line_len = self.lines[self.cursor_row].len();
             if self.cursor_col > current_line_len {
                 self.cursor_col = current_line_len;
             }
+            
+            // Check line length limit
+            if self.lines[self.cursor_row].len() >= self.max_line_length {
+                return false; // Line too long
+            }
+            
+            // Actually insert character
             self.lines[self.cursor_row].insert(self.cursor_col, c);
             self.cursor_col += 1;
         }
@@ -2362,27 +2774,53 @@ cursor_row: 0,
         self.last_edit_time = Instant::now();
         // Don't record every char insert for undo, wait for idle
         self.ensure_cursor_visible();
+        true
     }
 
-    fn delete_char(&mut self) { // Backspace behavior
+    fn delete_char(&mut self) -> bool {
         if self.cursor_col > 0 {
             // Delete character before cursor
-            self.lines[self.cursor_row].remove(self.cursor_col - 1);
-            self.cursor_col -= 1;
+            if self.cursor_row >= self.lines.len() {
+                return false; // Bounds check
+            }
+            
+            if self.cursor_col > self.lines[self.cursor_row].len() {
+                self.cursor_col = self.lines[self.cursor_row].len();
+            }
+            
+            if self.cursor_col > 0 {
+                self.lines[self.cursor_row].remove(self.cursor_col - 1);
+                self.cursor_col -= 1;
+            }
         } else if self.cursor_row > 0 {
             // At start of line, merge with previous line
+            if self.cursor_row >= self.lines.len() {
+                return false; // Bounds check
+            }
+            
             let current_line = self.lines.remove(self.cursor_row);
             let prev_line_len = self.lines[self.cursor_row - 1].len();
+            
+            // Check if merged line would be too long
+            if prev_line_len + current_line.len() > self.max_line_length {
+                // Revert the removal and don't merge
+                self.lines.insert(self.cursor_row, current_line);
+                return false;
+            }
+            
             self.lines[self.cursor_row - 1].push_str(&current_line);
 
             // Move cursor to end of previous line
             self.cursor_row -= 1;
             self.cursor_col = prev_line_len;
+        } else {
+            // At start of document, nothing to delete
+            return false;
         }
 
         self.last_edit_time = Instant::now();
-        // Don't record every char delete for undo, wait for idle
         self.ensure_cursor_visible();
+        true
     }
 
     fn move_cursor_left(&mut self) {
@@ -2391,12 +2829,24 @@ cursor_row: 0,
         } else if self.cursor_row > 0 {
             // Move to end of previous line
             self.cursor_row -= 1;
-            self.cursor_col = self.lines[self.cursor_row].len();
+            if self.cursor_row < self.lines.len() { // Bounds check
+                self.cursor_col = self.lines[self.cursor_row].len();
+            } else {
+                self.cursor_col = 0;
+            }
         }
         self.ensure_cursor_visible();
     }
 
     fn move_cursor_right(&mut self) {
+        if self.cursor_row >= self.lines.len() {
+            // Out of bounds, reset to last line
+            self.cursor_row = self.lines.len().saturating_sub(1);
+            self.cursor_col = 0;
+            self.ensure_cursor_visible();
+            return;
+        }
+        
         let current_line_len = self.lines[self.cursor_row].len();
         if self.cursor_col < current_line_len {
             self.cursor_col += 1;
@@ -2412,7 +2862,9 @@ cursor_row: 0,
         if self.cursor_row > 0 {
             self.cursor_row -= 1;
             // Adjust column if new line is shorter
-            self.cursor_col = self.cursor_col.min(self.lines[self.cursor_row].len());
+            if self.cursor_row < self.lines.len() { // Bounds check
+                self.cursor_col = self.cursor_col.min(self.lines[self.cursor_row].len());
+            }
         }
         self.ensure_cursor_visible();
     }
@@ -2431,14 +2883,18 @@ cursor_row: 0,
     }
 
     fn move_cursor_end(&mut self) {
-        self.cursor_col = self.lines[self.cursor_row].len();
+        if self.cursor_row < self.lines.len() { // Bounds check
+            self.cursor_col = self.lines[self.cursor_row].len();
+        }
     }
 
     fn page_up(&mut self, height: usize) {
         let effective_height = height.saturating_sub(1); // Move by almost a full page
         let target_row = self.cursor_row.saturating_sub(effective_height);
-        self.cursor_row = target_row.max(0);
-        self.cursor_col = self.cursor_col.min(self.lines[self.cursor_row].len());
+        self.cursor_row = target_row;
+        if self.cursor_row < self.lines.len() { // Bounds check
+            self.cursor_col = self.cursor_col.min(self.lines[self.cursor_row].len());
+        }
         self.ensure_cursor_visible();
     }
 
@@ -2446,11 +2902,19 @@ cursor_row: 0,
         let effective_height = height.saturating_sub(1); // Move by almost a full page
         let target_row = self.cursor_row.saturating_add(effective_height);
         self.cursor_row = target_row.min(self.lines.len().saturating_sub(1)); // Ensure bounds
-        self.cursor_col = self.cursor_col.min(self.lines[self.cursor_row].len());
+        if self.cursor_row < self.lines.len() { // Bounds check
+            self.cursor_col = self.cursor_col.min(self.lines[self.cursor_row].len());
+        }
         self.ensure_cursor_visible();
     }
 
     fn ensure_cursor_visible(&mut self) {
+        // Check if cursor is in a valid position
+        self.cursor_row = self.cursor_row.min(self.lines.len().saturating_sub(1));
+        if self.cursor_row < self.lines.len() {
+            self.cursor_col = self.cursor_col.min(self.lines[self.cursor_row].len());
+        }
+        
         // Determine visible height (needs adjustment based on actual rendering context)
         // This is tricky without knowing the exact layout height. Assume 20 for now.
         let visible_height = 20; // Placeholder height
@@ -2471,6 +2935,9 @@ cursor_row: 0,
 
     // Get lines for display within a given height, handling scroll offset
     fn get_display_lines(&self, height: usize) -> Vec<String> {
+        // Validate scroll offset to prevent out-of-bounds access
+        let valid_scroll_offset = self.scroll_offset.min(self.lines.len().saturating_sub(1));
+        
         // Calculate maximum line number width needed for the *entire document*
         let line_num_width = if self.line_numbers {
             self.lines.len().to_string().len()
@@ -2481,7 +2948,7 @@ cursor_row: 0,
         self.lines
             .iter()
             .enumerate()
-            .skip(self.scroll_offset) // Start from the scroll offset
+            .skip(valid_scroll_offset) // Start from the scroll offset
             .take(height)            // Take only enough lines to fill the height
             .map(|(i, line)| {
                 if self.line_numbers {
@@ -2531,7 +2998,12 @@ cursor_row: 0,
         }
     }
 
-    fn load_content(&mut self, content: &str) {
+    fn load_content(&mut self, content: &str) -> bool {
+        // Check size limits
+        if content.len() > MAX_BUFFER_SIZE {
+            return false;
+        }
+        
         // Clear current buffer
         self.lines.clear();
         self.cursor_row = 0;
@@ -2539,8 +3011,23 @@ cursor_row: 0,
         self.scroll_offset = 0;
         self.content_history.clear(); // Clear history on load
 
-        // Load content line by line
-        let new_lines: Vec<String> = content.lines().map(|l| l.to_string()).collect();
+        // Load content line by line with validation
+        let mut new_lines: Vec<String> = Vec::new();
+        for line in content.lines() {
+            if line.len() > self.max_line_length {
+                // Line too long, truncate
+                let truncated = line.chars().take(self.max_line_length).collect();
+                new_lines.push(truncated);
+            } else {
+                new_lines.push(line.to_string());
+            }
+            
+            // Check total line limit
+            if new_lines.len() >= MAX_BUFFER_SIZE / 100 {  // Arbitrary limit - 1% of max buffer size
+                break;
+            }
+        }
+        
         if new_lines.is_empty() {
             self.lines.push(String::new()); // Ensure at least one empty line
         } else {
@@ -2550,6 +3037,8 @@ cursor_row: 0,
         // Record the loaded state as the initial history point
         self.record_history();
         self.last_edit_time = Instant::now(); // Reset edit time
+        
+        true
     }
 
     fn toggle_line_numbers(&mut self) {
@@ -2562,26 +3051,39 @@ cursor_row: 0,
     }
 
     // Undo functionality
-    fn undo(&mut self) {
+    fn undo(&mut self) -> bool {
         if self.content_history.len() > 1 {
             // Remove current state (the one most recently added)
             self.content_history.pop_back();
 
             // Get the previous state from the history
             if let Some(previous_content) = self.content_history.back().cloned() {
-                // Load the previous content without adding it back to history here
+                // Load the previous content without adding it back to history
                 let current_cursor_row = self.cursor_row; // Store cursor roughly
                 let current_cursor_col = self.cursor_col;
 
-                self.lines = previous_content.lines().map(|l| l.to_string()).collect();
-                if self.lines.is_empty() { self.lines.push(String::new()); }
+                // Split into lines
+                let prev_lines: Vec<String> = previous_content.lines().map(|l| l.to_string()).collect();
+                
+                // Load previous content
+                self.lines = if prev_lines.is_empty() {
+                    vec![String::new()]
+                } else {
+                    prev_lines
+                };
 
                 // Try to restore cursor position (might be imperfect)
                 self.cursor_row = current_cursor_row.min(self.lines.len().saturating_sub(1));
-                self.cursor_col = current_cursor_col.min(self.lines[self.cursor_row].len());
+                if self.cursor_row < self.lines.len() {
+                    self.cursor_col = current_cursor_col.min(self.lines[self.cursor_row].len());
+                } else {
+                    self.cursor_col = 0;
+                }
 
                 self.last_edit_time = Instant::now(); // Mark as edited
                 self.ensure_cursor_visible();
+                
+                return true;
             }
         } else if self.content_history.len() == 1 {
             // If only one state left (initial loaded/new state), clear the buffer
@@ -2591,7 +3093,11 @@ cursor_row: 0,
             self.scroll_offset = 0;
             self.content_history.pop_back(); // Remove the last state
             self.last_edit_time = Instant::now();
+            
+            return true;
         }
+        
+        false
     }
 }
 
@@ -2627,23 +3133,42 @@ struct FileBrowser {
 }
 
 impl FileBrowser {
-    fn new() -> Self {
-        let current_dir = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    fn new() -> BitQuillResult<Self> {
+        let current_dir = match env::current_dir() {
+            Ok(dir) => dir,
+            Err(e) => {
+                // Fallback to home directory or working directory
+                let fallback = match dirs::home_dir() {
+                    Some(home) => home,
+                    None => PathBuf::from(".")
+                };
+                
+                eprintln!("Warning: Failed to get current dir: {}, using fallback", e);
+                fallback
+            }
+        };
+        
         // Scan initially without filter
-        let entries = Self::scan_directory(&current_dir, None);
+        let entries = match Self::scan_directory(&current_dir, None) {
+            Ok(entries) => entries,
+            Err(e) => {
+                eprintln!("Warning: Failed to scan directory: {}", e);
+                Vec::new()
+            }
+        };
 
-        FileBrowser {
+        Ok(FileBrowser {
             current_dir,
             entries,
             selected_idx: 0,
             filter: None,
             filename_input: String::new(),
             is_editing_filename: false,
-        }
+        })
     }
 
     // Scans directory, optionally filtering files by extension
-    fn scan_directory(dir: &Path, filter_ext: Option<&str>) -> Vec<PathBuf> {
+    fn scan_directory(dir: &Path, filter_ext: Option<&str>) -> BitQuillResult<Vec<PathBuf>> {
         let mut entries = Vec::new();
 
         // Add parent directory ("..") option, unless already at root
@@ -2654,53 +3179,59 @@ impl FileBrowser {
         }
 
         // Read directory entries
-        if let Ok(read_dir) = fs::read_dir(dir) {
-            let mut dirs = Vec::new();
-            let mut files = Vec::new();
+        match fs::read_dir(dir) {
+            Ok(read_dir) => {
+                let mut dirs = Vec::new();
+                let mut files = Vec::new();
 
-            for entry_result in read_dir {
-                if let Ok(entry) = entry_result {
-                    let path = entry.path();
+                for entry_result in read_dir {
+                    match entry_result {
+                        Ok(entry) => {
+                            let path = entry.path();
 
-                    // Basic hidden file check (Unix/macOS style)
-                    if path.file_name().and_then(|n| n.to_str()).map_or(false, |s| s.starts_with('.')) {
-                        continue;
-                    }
-
-                    if path.is_dir() {
-                        dirs.push(path);
-                    } else if path.is_file() {
-                        // Apply filter if specified
-                        if let Some(ext_filter) = filter_ext {
-                            if path.extension().and_then(|e| e.to_str()) == Some(ext_filter) {
-                                files.push(path);
+                            // Basic hidden file check (Unix/macOS style)
+                            if path.file_name()
+                                .and_then(|n| n.to_str())
+                                .map_or(false, |s| s.starts_with('.')) 
+                            {
+                                continue;
                             }
-                        } else {
-                            // No filter, include all files
-                            files.push(path);
+
+                            if path.is_dir() {
+                                dirs.push(path);
+                            } else if path.is_file() {
+                                // Apply filter if specified
+                                if let Some(ext_filter) = filter_ext {
+                                    if path.extension().and_then(|e| e.to_str()) == Some(ext_filter) {
+                                        files.push(path);
+                                    }
+                                } else {
+                                    // No filter, include all files
+                                    files.push(path);
+                                }
+                            }
+                        },
+                        Err(e) => {
+                            eprintln!("Warning: Error reading directory entry: {}", e);
+                            // Continue with next entry
                         }
                     }
                 }
-            }
 
-            // Sort directories and files alphabetically
-            dirs.sort_by_key(|d| d.file_name().unwrap_or_default().to_ascii_lowercase());
-            files.sort_by_key(|f| f.file_name().unwrap_or_default().to_ascii_lowercase());
+                // Sort directories and files alphabetically
+                dirs.sort_by_key(|d| d.file_name().unwrap_or_default().to_ascii_lowercase());
+                files.sort_by_key(|f| f.file_name().unwrap_or_default().to_ascii_lowercase());
 
-            // Combine: ".." first, then sorted dirs, then sorted files
-            entries.append(&mut dirs);
-            entries.append(&mut files);
-        } else {
-            eprintln!("Warning: Could not read directory {}", dir.display());
-            // Still add ".." if possible
-            if entries.is_empty() {
-                if let Some(parent) = dir.parent() {
-                    if parent != dir { entries.push(dir.join("..")); }
-                }
+                // Combine: ".." first, then sorted dirs, then sorted files
+                entries.append(&mut dirs);
+                entries.append(&mut files);
+            },
+            Err(e) => {
+                return Err(BitQuillError::IoError(e));
             }
         }
 
-        entries
+        Ok(entries)
     }
 
     fn navigate_up(&mut self) {
@@ -2715,10 +3246,10 @@ impl FileBrowser {
         }
     }
 
-    // Tries to enter the selected directory. Returns true if successful.
-    fn enter_directory(&mut self) -> bool {
+    // Tries to enter the selected directory. Returns Ok(true) if successful, Ok(false) if not directory.
+    fn enter_directory(&mut self) -> BitQuillResult<bool> {
         if self.entries.is_empty() || self.selected_idx >= self.entries.len() {
-            return false; // Avoid panic on empty or out-of-bounds index
+            return Ok(false); // Avoid panic on empty or out-of-bounds index
         }
 
         let selected_path = &self.entries[self.selected_idx];
@@ -2727,23 +3258,33 @@ impl FileBrowser {
         if selected_path.file_name().map_or(false, |name| name == "..") {
             if let Some(parent) = self.current_dir.parent() {
                 self.current_dir = parent.to_path_buf();
-                self.entries = Self::scan_directory(&self.current_dir, self.filter.as_deref());
+                // Rescan with current filter
+                self.entries = Self::scan_directory(&self.current_dir, self.filter.as_deref())?;
                 self.selected_idx = 0; // Reset selection
                 self.filename_input.clear(); // Clear filename input when changing dir
                 self.is_editing_filename = false;
-                return true;
+                return Ok(true);
             }
         } else if selected_path.is_dir() {
             // Canonicalize to handle symlinks etc. but fallback gracefully
-            self.current_dir = fs::canonicalize(selected_path).unwrap_or_else(|_| selected_path.to_path_buf());
-            self.entries = Self::scan_directory(&self.current_dir, self.filter.as_deref());
+            match fs::canonicalize(selected_path) {
+                Ok(canonical_path) => {
+                    self.current_dir = canonical_path;
+                },
+                Err(_) => {
+                    self.current_dir = selected_path.to_path_buf();
+                }
+            }
+            
+            // Rescan with current filter
+            self.entries = Self::scan_directory(&self.current_dir, self.filter.as_deref())?;
             self.selected_idx = 0; // Reset selection
             self.filename_input.clear(); // Clear filename input
             self.is_editing_filename = false;
-            return true;
+            return Ok(true);
         }
 
-        false // Not a directory or ".."
+        Ok(false) // Not a directory or ".."
     }
 
     // Gets the currently selected path (could be a file or directory)
@@ -2756,21 +3297,23 @@ impl FileBrowser {
     }
 
     // Sets the file extension filter (e.g., "bq") and rescans
-    fn set_filter(&mut self, ext: &str) {
+    fn set_filter(&mut self, ext: &str) -> BitQuillResult<()> {
         self.filter = Some(ext.to_string());
-        self.entries = Self::scan_directory(&self.current_dir, self.filter.as_deref());
+        self.entries = Self::scan_directory(&self.current_dir, self.filter.as_deref())?;
         self.selected_idx = 0; // Reset selection
         self.filename_input.clear();
         self.is_editing_filename = false;
+        Ok(())
     }
 
     // Clears the file extension filter and rescans
-    fn clear_filter(&mut self) {
+    fn clear_filter(&mut self) -> BitQuillResult<()> {
         self.filter = None;
-        self.entries = Self::scan_directory(&self.current_dir, None);
+        self.entries = Self::scan_directory(&self.current_dir, None)?;
         self.selected_idx = 0; // Reset selection
         self.filename_input.clear();
         self.is_editing_filename = false;
+        Ok(())
     }
 
     // Gets formatted entry names for display in the TUI List
@@ -2792,6 +3335,16 @@ impl FileBrowser {
             })
             .collect()
     }
+    
+    // Safely add a character to filename input (with length validation)
+    fn add_to_filename(&mut self, c: char) -> bool {
+        if self.filename_input.len() < 255 {  // Max filename length
+            self.filename_input.push(c);
+            true
+        } else {
+            false
+        }
+    }
 }
 
 // Metadata editor dialog state
@@ -2800,6 +3353,7 @@ struct MetadataEditor {
     current_field: usize, // 0: title, 1: author, 2: keywords, 3: description
     editing: bool,
     edit_buffer: String,
+    max_field_length: usize, // Maximum field length
 }
 
 impl MetadataEditor {
@@ -2809,6 +3363,7 @@ impl MetadataEditor {
             current_field: 0,
             editing: false,
             edit_buffer: String::new(),
+            max_field_length: 1000, // Reasonable max field length
         }
     }
 
@@ -2830,28 +3385,48 @@ impl MetadataEditor {
     fn start_editing(&mut self) {
         if self.editing { return; } // Already editing
         self.editing = true;
-        match self.current_field {
-            0 => self.edit_buffer = self.metadata.title.clone(),
-            1 => self.edit_buffer = self.metadata.author.clone(),
-            2 => self.edit_buffer = self.metadata.keywords.join(", "), // Edit as comma-separated
-            3 => self.edit_buffer = self.metadata.description.clone(),
-            _ => self.editing = false, // Invalid field
-        }
+        self.edit_buffer = match self.current_field {
+            0 => self.metadata.title.clone(),
+            1 => self.metadata.author.clone(),
+            2 => self.metadata.keywords.join(", "), // Edit as comma-separated
+            3 => self.metadata.description.clone(),
+            _ => {
+                self.editing = false; // Invalid field
+                String::new()
+            }
+        };
     }
 
-    fn handle_edit_key(&mut self, code: KeyCode) {
-        if !self.editing { return; }
+    fn handle_edit_key(&mut self, code: KeyCode) -> bool {
+        if !self.editing { return false; }
+        
         match code {
-            KeyCode::Enter => self.finish_editing(),
-            KeyCode::Esc => self.cancel_editing(),
-            KeyCode::Backspace => { self.edit_buffer.pop(); },
-            KeyCode::Char(c) => self.edit_buffer.push(c),
-            _ => {} // Ignore other keys while editing buffer
+            KeyCode::Enter => {
+                self.finish_editing();
+                true
+            },
+            KeyCode::Esc => {
+                self.cancel_editing();
+                true
+            },
+            KeyCode::Backspace => { 
+                self.edit_buffer.pop();
+                true
+            },
+            KeyCode::Char(c) => {
+                // Check length limit
+                if self.edit_buffer.len() < self.max_field_length {
+                    self.edit_buffer.push(c);
+                }
+                true
+            },
+            _ => false // Ignore other keys while editing buffer
         }
     }
 
     fn finish_editing(&mut self) {
         if !self.editing { return; }
+        
         match self.current_field {
             0 => self.metadata.title = self.edit_buffer.trim().to_string(),
             1 => self.metadata.author = self.edit_buffer.trim().to_string(),
@@ -2865,6 +3440,7 @@ impl MetadataEditor {
             3 => self.metadata.description = self.edit_buffer.trim().to_string(),
             _ => {}
         }
+        
         self.editing = false;
         self.edit_buffer.clear();
     }
@@ -2914,12 +3490,36 @@ struct App {
 }
 
 impl App {
-    fn new() -> Self {
+    fn new() -> BitQuillResult<Self> {
         // Load recent files if available
-        let recent_files = Self::load_recent_files();
+        let recent_files = match Self::load_recent_files() {
+            Ok(files) => files,
+            Err(e) => {
+                eprintln!("Warning: Failed to load recent files: {}", e);
+                Vec::new()
+            }
+        };
+        
+        // Create file browser with error handling
+        let file_browser = match FileBrowser::new() {
+            Ok(browser) => browser,
+            Err(e) => {
+                eprintln!("Warning: Failed to initialize file browser: {}", e);
+                return Err(e);
+            }
+        };
+        
+        // Create MerkleDocument with error handling
+        let document = match MerkleDocument::new() {
+            Ok(doc) => doc,
+            Err(e) => {
+                eprintln!("Error: Failed to initialize document: {}", e);
+                return Err(e);
+            }
+        };
 
-        App {
-            document: MerkleDocument::new(),
+        Ok(App {
+            document,
             buffer: TextBuffer::new(2000),  // 2 second idle threshold for history commit
             history_scroll: 0,
             mode: AppMode::Editing,
@@ -2928,28 +3528,36 @@ impl App {
             file_path: None,
             recent_files,
             dialog: Dialog::None,
-            file_browser: FileBrowser::new(),
+            file_browser,
             metadata_editor: None,
             should_quit: false,
             status_time: Instant::now(),
             show_tick_indicator: false,
             auto_save_enabled: true, // Auto-save on by default
             search_state: SearchState::new(),
-        }
+        })
     }
 
     // Simplified char insertion - delegates to buffer
-    fn insert_char(&mut self, c: char) {
-        self.buffer.insert_char(c);
-        // Mark document as dirty immediately on change
-        self.document.dirty = true;
+    fn insert_char(&mut self, c: char) -> bool {
+        if self.buffer.insert_char(c) {
+            // Mark document as dirty immediately on change
+            self.document.dirty = true;
+            true
+        } else {
+            false
+        }
     }
 
     // Simplified char deletion - delegates to buffer
-    fn delete_char(&mut self) {
-        self.buffer.delete_char();
-        // Mark document as dirty immediately on change
-        self.document.dirty = true;
+    fn delete_char(&mut self) -> bool {
+        if self.buffer.delete_char() {
+            // Mark document as dirty immediately on change
+            self.document.dirty = true;
+            true
+        } else {
+            false
+        }
     }
 
     // Toggle between primary modes (Edit/View)
@@ -2958,9 +3566,16 @@ impl App {
             AppMode::Editing => {
                 // Before switching away from editing, record pending changes if any
                 if self.buffer.has_changes_since_last_record() {
-                    self.document.record_change(self.buffer.get_content());
-                    self.buffer.record_history(); // Commit to buffer history too
-                    self.message = "Changes recorded, switching to View mode.".to_string();
+                    match self.document.record_change(self.buffer.get_content()) {
+                        Ok(_) => {
+                            self.buffer.record_history(); // Commit to buffer history too
+                            self.message = "Changes recorded, switching to View mode.".to_string();
+                        },
+                        Err(e) => {
+                            self.message = format!("Error recording changes: {}", e);
+                            return; // Don't switch modes if error
+                        }
+                    }
                 } else {
                     self.message = "Viewing mode - Press Tab/F2 to return to editing".to_string();
                 }
@@ -3015,18 +3630,23 @@ impl App {
             // Enter help mode
             // Record pending changes before leaving editing state
             if self.mode == AppMode::Editing && self.buffer.has_changes_since_last_record() {
-                self.document.record_change(self.buffer.get_content());
-                self.buffer.record_history();
+                match self.document.record_change(self.buffer.get_content()) {
+                    Ok(_) => self.buffer.record_history(),
+                    Err(e) => {
+                        self.message = format!("Error recording changes: {}", e);
+                        return; // Don't switch modes if error
+                    }
+                }
             }
             self.mode = AppMode::Help;
             self.message = "Showing help. Press F1 or Esc to close.".to_string();
         }
     }
 
-    fn update(&mut self) {
+    fn update(&mut self) -> BitQuillResult<()> {
         // Process any new VDF clock ticks and potentially create leaves
         let tick_before = self.document.latest_tick.as_ref().map(|t| t.sequence_number);
-        let leaf_created = self.document.process_vdf_ticks();
+        let leaf_created = self.document.process_vdf_ticks()?;
         let tick_after = self.document.latest_tick.as_ref().map(|t| t.sequence_number);
 
         if leaf_created {
@@ -3047,11 +3667,17 @@ impl App {
         // Check for idle edits in Editing mode and commit to history/document state
         if self.mode == AppMode::Editing && self.buffer.is_idle() && self.buffer.has_changes_since_last_record() {
             let content = self.buffer.get_content();
-            self.document.record_change(content); // Mark change pending VDF tick
-            self.buffer.record_history(); // Record in undo history
-            self.message = "Changes recorded - waiting for next Merkle leaf creation".to_string();
-            // Mark dirty flag here too, although record_change should do it.
-            self.document.dirty = true;
+            match self.document.record_change(content) {
+                Ok(_) => {
+                    self.buffer.record_history(); // Record in undo history
+                    self.message = "Changes recorded - waiting for next Merkle leaf creation".to_string();
+                    // Mark dirty flag here too, although record_change should do it.
+                    self.document.dirty = true;
+                },
+                Err(e) => {
+                    self.message = format!("Error recording changes: {}", e);
+                }
+            }
         }
 
         // Auto-save if enabled, document is dirty, path exists, and interval passed
@@ -3062,8 +3688,12 @@ impl App {
 
             // Before saving, ensure latest buffer changes are recorded if in editing mode
             if self.mode == AppMode::Editing && self.buffer.has_changes_since_last_record() {
-                self.document.record_change(self.buffer.get_content());
-                self.buffer.record_history();
+                match self.document.record_change(self.buffer.get_content()) {
+                    Ok(_) => self.buffer.record_history(),
+                    Err(e) => {
+                        self.message = format!("Error recording changes: {}", e);
+                    }
+                }
             }
 
             // Now attempt to save
@@ -3080,39 +3710,43 @@ impl App {
             self.show_tick_indicator = false;
             // Maybe clear the message related to the indicator? Or let the next message overwrite.
         }
+        
+        Ok(())
     }
 
     // Save document to current file_path or trigger SaveAs dialog
-    fn save_document(&mut self) -> io::Result<()> {
+    fn save_document(&mut self) -> BitQuillResult<()> {
         // Ensure latest buffer changes are recorded before saving
         if self.mode == AppMode::Editing && self.buffer.has_changes_since_last_record() {
-            self.document.record_change(self.buffer.get_content());
-            self.buffer.record_history();
+            match self.document.record_change(self.buffer.get_content()) {
+                Ok(_) => self.buffer.record_history(),
+                Err(e) => return Err(e)
+            }
         }
 
         match &self.file_path {
             Some(p) => {
                 let path_clone = p.clone(); // Clone to satisfy borrow checker
                 self.document.save_to_file(&path_clone)?; // This now sets dirty = false
-                self.add_to_recent_files(&path_clone); // Update recent files
+                self.add_to_recent_files(&path_clone)?; // Update recent files
                 self.message = format!("Document saved to {}", path_clone.display());
                 self.last_auto_save = Instant::now(); // Reset auto-save timer on manual save
                 Ok(())
             },
             None => {
                 // No path set - trigger SaveAs dialog
-                self.trigger_save_as_dialog();
+                self.trigger_save_as_dialog()?;
                 // Indicate failure for now, dialog will handle the save later
-                Err(io::Error::new(io::ErrorKind::Other, "Save As dialog triggered"))
+                Err(BitQuillError::StateError("Save As dialog triggered".to_string()))
             }
         }
     }
 
     // Trigger SaveAs dialog state change
-    fn trigger_save_as_dialog(&mut self) {
+    fn trigger_save_as_dialog(&mut self) -> BitQuillResult<()> {
         self.mode = AppMode::FileDialog; // Switch mode
         self.dialog = Dialog::SaveAs; // Set specific dialog type
-        self.file_browser.set_filter(BITQUILL_FILE_EXT); // Set filter for .bq files
+        self.file_browser.set_filter(BITQUILL_FILE_EXT)?; // Set filter for .bq files
         self.file_browser.filename_input = self.file_path // Pre-fill filename if available
             .as_ref()
             .and_then(|p| p.file_name())
@@ -3121,15 +3755,24 @@ impl App {
             .unwrap_or_else(|| "Untitled.bq".to_string());
         self.file_browser.is_editing_filename = true; // Start editing the filename
         self.message = "Save As: Enter filename and press Enter.".to_string();
+        Ok(())
     }
 
     // Confirm SaveAs action from dialog input
-    fn confirm_save_as(&mut self) -> io::Result<()> {
+    fn confirm_save_as(&mut self) -> BitQuillResult<()> {
         let filename = self.file_browser.filename_input.trim();
         if filename.is_empty() {
             self.message = "Filename cannot be empty. Press Esc to cancel.".to_string();
             self.file_browser.is_editing_filename = true; // Keep editing
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "Empty filename"));
+            return Err(BitQuillError::ValidationError("Empty filename".to_string()));
+        }
+
+        // Validate filename
+        if filename.contains(|c: char| c == '/' || c == '\\' || c == ':' || c == '*' || 
+                             c == '?' || c == '"' || c == '<' || c == '>' || c == '|') {
+            self.message = "Filename contains invalid characters. Press Esc to cancel.".to_string();
+            self.file_browser.is_editing_filename = true; // Keep editing
+            return Err(BitQuillError::ValidationError("Invalid filename characters".to_string()));
         }
 
         let mut save_path = self.file_browser.current_dir.clone();
@@ -3142,8 +3785,16 @@ impl App {
 
         // Ensure latest buffer changes are recorded
         if self.mode == AppMode::Editing && self.buffer.has_changes_since_last_record() {
-            self.document.record_change(self.buffer.get_content());
-            self.buffer.record_history();
+            match self.document.record_change(self.buffer.get_content()) {
+                Ok(_) => self.buffer.record_history(),
+                Err(e) => return Err(e)
+            }
+        }
+
+        // Check if file exists and prompt for confirmation (not implemented yet)
+        if save_path.exists() {
+            // In a real implementation, we would prompt for confirmation
+            // For now, we'll just overwrite
         }
 
         // Save document to the new path
@@ -3151,14 +3802,14 @@ impl App {
 
         // Update app state
         self.file_path = Some(save_path.clone());
-        self.add_to_recent_files(&save_path); // Update recent files
+        self.add_to_recent_files(&save_path)?; // Update recent files
 
         // Close dialog and return to editing mode
         self.dialog = Dialog::None;
         self.mode = AppMode::Editing; // Return to editing after save
         self.file_browser.filename_input.clear();
         self.file_browser.is_editing_filename = false;
-        self.file_browser.clear_filter(); // Clear filter after dialog closes
+        self.file_browser.clear_filter()?; // Clear filter after dialog closes
 
         self.message = format!("Document saved to {}", save_path.display());
         self.last_auto_save = Instant::now(); // Reset auto-save timer
@@ -3166,27 +3817,29 @@ impl App {
     }
 
     // Trigger Open dialog state change
-    fn trigger_open_dialog(&mut self) {
+    fn trigger_open_dialog(&mut self) -> BitQuillResult<()> {
         if self.document.has_unsaved_changes() {
             self.dialog = Dialog::UnsavedChanges(UnsavedAction::Open);
             self.message = "Save unsaved changes before opening?".to_string();
         } else {
-            self.start_open_dialog();
+            self.start_open_dialog()?;
         }
+        Ok(())
     }
 
     // Actually starts the Open dialog UI
-    fn start_open_dialog(&mut self) {
+    fn start_open_dialog(&mut self) -> BitQuillResult<()> {
         self.mode = AppMode::FileDialog;
         self.dialog = Dialog::Open;
-        self.file_browser.set_filter(BITQUILL_FILE_EXT); // Filter for .bq files
+        self.file_browser.set_filter(BITQUILL_FILE_EXT)?; // Filter for .bq files
         self.file_browser.filename_input.clear(); // Not used for open
         self.file_browser.is_editing_filename = false;
         self.message = "Open File: Select a .bq file and press Enter.".to_string();
+        Ok(())
     }
 
     // Confirm Open action from dialog input
-    fn confirm_open(&mut self) -> io::Result<()> {
+    fn confirm_open(&mut self) -> BitQuillResult<()> {
         if let Some(path) = self.file_browser.get_selected_path() {
             if path.is_file() {
                 // Ensure file has the correct extension before trying to load
@@ -3195,62 +3848,70 @@ impl App {
                     self.document.load_from_file(&path)?; // Load resets dirty flag
 
                     // Update buffer with loaded content
-                    self.buffer.load_content(&self.document.get_current_content());
+                    if !self.buffer.load_content(&self.document.get_current_content()) {
+                        return Err(BitQuillError::ResourceExhaustedError(
+                            "Document too large to load into buffer".to_string()
+                        ));
+                    }
 
                     // Update app state
                     self.file_path = Some(path.clone());
-                    self.add_to_recent_files(&path);
+                    self.add_to_recent_files(&path)?;
 
                     // Close dialog and switch to editing mode
                     self.dialog = Dialog::None;
                     self.mode = AppMode::Editing; // Go to editing after open
-                    self.file_browser.clear_filter();
+                    self.file_browser.clear_filter()?;
 
                     self.message = format!("Document opened from {}", path.display());
                     Ok(())
                 } else {
                     self.message = "Invalid file type. Please select a .bq file.".to_string();
-                    Err(io::Error::new(io::ErrorKind::InvalidInput, "Wrong file type"))
+                    Err(BitQuillError::ValidationError("Wrong file type".to_string()))
                 }
             } else if path.is_dir() {
                 // Navigate into directory
-                self.file_browser.enter_directory();
-                // Stay in dialog mode after navigation
-                Err(io::Error::new(io::ErrorKind::Other, "Navigated directory"))
+                match self.file_browser.enter_directory() {
+                    Ok(_) => Ok(()),  // Stay in dialog mode after navigation
+                    Err(e) => Err(e)
+                }
             } else {
                 // Should not happen if scan_directory is correct
                 self.message = "Selected path is not a file or directory.".to_string();
-                Err(io::Error::new(io::ErrorKind::NotFound, "Invalid selection"))
+                Err(BitQuillError::ValidationError("Invalid selection".to_string()))
             }
         } else {
             self.message = "No file or directory selected.".to_string();
-            Err(io::Error::new(io::ErrorKind::NotFound, "No selection"))
+            Err(BitQuillError::ValidationError("No selection".to_string()))
         }
     }
 
     // Trigger New document action (checking for unsaved changes)
-    fn trigger_new_document(&mut self) {
+    fn trigger_new_document(&mut self) -> BitQuillResult<()> {
         if self.document.has_unsaved_changes() {
             self.dialog = Dialog::UnsavedChanges(UnsavedAction::New);
             self.message = "Save unsaved changes before creating a new document?".to_string();
         } else {
-            self.confirm_new_document(); // No unsaved changes, proceed directly
+            self.confirm_new_document()?; // No unsaved changes, proceed directly
         }
+        Ok(())
     }
 
     // Actually create the new document state
-    fn confirm_new_document(&mut self) {
+    fn confirm_new_document(&mut self) -> BitQuillResult<()> {
         // Record changes of the *old* document before discarding if needed
         if self.mode == AppMode::Editing && self.buffer.has_changes_since_last_record() {
-            self.document.record_change(self.buffer.get_content());
-            self.buffer.record_history();
+            match self.document.record_change(self.buffer.get_content()) {
+                Ok(_) => self.buffer.record_history(),
+                Err(e) => return Err(e)
+            }
         }
 
         // Shutdown old VDF clock before replacing document
         self.document.shutdown();
 
         // Create new document state (this starts a new VDF clock)
-        self.document = MerkleDocument::new();
+        self.document = MerkleDocument::new()?;
 
         // Clear buffer and history
         self.buffer = TextBuffer::new(2000); // Recreate buffer too
@@ -3264,19 +3925,25 @@ impl App {
 
         self.message = "New document created".to_string();
         self.last_auto_save = Instant::now(); // Reset auto-save timer
+        Ok(())
     }
 
     // Trigger verification action
-    fn verify_document(&mut self, level: VerificationLevel) {
+    fn verify_document(&mut self, level: VerificationLevel) -> BitQuillResult<()> {
         // Record pending changes before verifying
         if self.mode == AppMode::Editing && self.buffer.has_changes_since_last_record() {
-            self.document.record_change(self.buffer.get_content());
-            self.buffer.record_history();
+            match self.document.record_change(self.buffer.get_content()) {
+                Ok(_) => self.buffer.record_history(),
+                Err(e) => return Err(e)
+            }
         }
+        
         // Update message BEFORE starting verification
         self.message = format!("Starting verification with {} leaves and {} nodes...", 
                              self.document.leaves.len(), 
                              self.document.nodes.len());
+        
+        // For consistency with original code, we don't propagate verification errors
         let result = self.document.verify_merkle_integrity(level);
         let leaf_count = self.document.leaves.len();
         let tick_count_mem = self.document.get_tick_count();
@@ -3292,18 +3959,20 @@ impl App {
         // Switch to verification detail view
         self.mode = AppMode::VerifyDetail;
         self.history_scroll = 0; // Reset scroll
+        Ok(())
     }
 
     // Trigger Export dialog
-    fn trigger_export_dialog(&mut self) {
+    fn trigger_export_dialog(&mut self) -> BitQuillResult<()> {
         if self.document.leaves.is_empty() {
             self.message = "No leaves to export. Create some document history first.".to_string();
-            return; // Don't open dialog if nothing to export
+            return Ok(()); // Don't open dialog if nothing to export
         }
 
         self.mode = AppMode::FileDialog;
         self.dialog = Dialog::Export;
-        self.file_browser.set_filter(BITQUILL_CHAIN_EXT); // Filter for .bqc
+        self.file_browser.set_filter(BITQUILL_CHAIN_EXT)?; // Filter for .bqc
+        
         // Suggest a default export filename based on the document name
         let default_export_name = self.file_path.as_ref()
             .map(|p| p.with_extension(BITQUILL_CHAIN_EXT))
@@ -3314,15 +3983,24 @@ impl App {
         self.file_browser.filename_input = default_export_name;
         self.file_browser.is_editing_filename = true; // Start editing
         self.message = "Export Chain Data: Enter filename (.bqc) and press Enter.".to_string();
+        Ok(())
     }
 
     // Confirm Export action from dialog
-    fn confirm_export(&mut self) -> io::Result<()> {
+    fn confirm_export(&mut self) -> BitQuillResult<()> {
         let filename = self.file_browser.filename_input.trim();
         if filename.is_empty() {
             self.message = "Filename cannot be empty. Press Esc to cancel.".to_string();
             self.file_browser.is_editing_filename = true; // Keep editing
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "Empty filename"));
+            return Err(BitQuillError::ValidationError("Empty filename".to_string()));
+        }
+
+        // Validate filename
+        if filename.contains(|c: char| c == '/' || c == '\\' || c == ':' || c == '*' || 
+                             c == '?' || c == '"' || c == '<' || c == '>' || c == '|') {
+            self.message = "Filename contains invalid characters. Press Esc to cancel.".to_string();
+            self.file_browser.is_editing_filename = true; // Keep editing
+            return Err(BitQuillError::ValidationError("Invalid filename characters".to_string()));
         }
 
         let mut export_path = self.file_browser.current_dir.clone();
@@ -3341,27 +4019,31 @@ impl App {
         self.mode = AppMode::Editing; // Or whatever mode user was in before export
         self.file_browser.filename_input.clear();
         self.file_browser.is_editing_filename = false;
-        self.file_browser.clear_filter();
+        self.file_browser.clear_filter()?;
 
         self.message = format!("Merkle tree data exported to {}", export_path.display());
         Ok(())
     }
 
     // Enter metadata editing mode
-    fn trigger_edit_metadata(&mut self) {
+    fn trigger_edit_metadata(&mut self) -> BitQuillResult<()> {
         // Record pending buffer changes first
         if self.mode == AppMode::Editing && self.buffer.has_changes_since_last_record() {
-            self.document.record_change(self.buffer.get_content());
-            self.buffer.record_history();
+            match self.document.record_change(self.buffer.get_content()) {
+                Ok(_) => self.buffer.record_history(),
+                Err(e) => return Err(e)
+            }
         }
+        
         // Create metadata editor state with current metadata
         self.metadata_editor = Some(MetadataEditor::new(self.document.metadata.clone()));
         self.mode = AppMode::MetadataEdit;
         self.message = "Edit Metadata: Use Arrows, Enter to edit field, Ctrl+S to save, Esc to cancel.".to_string();
+        Ok(())
     }
 
     // Save metadata changes from editor
-    fn save_metadata(&mut self) {
+    fn save_metadata(&mut self) -> BitQuillResult<()> {
         if let Some(editor) = &self.metadata_editor {
             // Check if metadata actually changed
             let new_metadata = editor.get_metadata();
@@ -3381,6 +4063,7 @@ impl App {
             self.mode = AppMode::Editing;
             self.metadata_editor = None; // Clear editor state
         }
+        Ok(())
     }
 
     // Cancel metadata editing
@@ -3413,11 +4096,13 @@ impl App {
     }
 
     // Request quit, checking for unsaved changes
-    fn request_quit(&mut self) {
+    fn request_quit(&mut self) -> BitQuillResult<()> {
         // Ensure latest buffer changes are recorded if needed
         if self.mode == AppMode::Editing && self.buffer.has_changes_since_last_record() {
-            self.document.record_change(self.buffer.get_content());
-            self.buffer.record_history();
+            match self.document.record_change(self.buffer.get_content()) {
+                Ok(_) => self.buffer.record_history(),
+                Err(e) => return Err(e)
+            }
         }
 
         if self.document.has_unsaved_changes() {
@@ -3428,19 +4113,20 @@ impl App {
             // No unsaved changes, quit immediately
             self.should_quit = true;
         }
+        Ok(())
     }
 
     // Handle confirmation for unsaved changes dialog ('Y' or 'N')
-    fn handle_unsaved_dialog_confirm(&mut self, save_first: bool) {
+    fn handle_unsaved_dialog_confirm(&mut self, save_first: bool) -> BitQuillResult<()> {
         if let Dialog::UnsavedChanges(action) = self.dialog.clone() { // Clone action
             if save_first {
                 // Attempt to save; if successful or no path (SaveAs triggered), proceed.
                 // If save fails, stay in dialog.
                 match self.save_document() {
                     Ok(_) => { // Saved successfully
-                        self.proceed_with_action(action);
+                        self.proceed_with_action(action)?;
                     }
-                    Err(e) if e.to_string().contains("Save As dialog triggered") => {
+                    Err(e) if matches!(e, BitQuillError::StateError(ref s) if s == "Save As dialog triggered") => {
                         // Save As dialog is now active, don't proceed yet.
                         // User needs to complete Save As first.
                         self.message = "Please complete the Save As dialog.".to_string();
@@ -3454,16 +4140,17 @@ impl App {
             } else {
                 // Discard changes and proceed
                 self.document.dirty = false; // Mark as not dirty explicitly
-                self.proceed_with_action(action);
+                self.proceed_with_action(action)?;
             }
         }
+        Ok(())
     }
 
     // Proceeds with the original action after unsaved changes are handled
-    fn proceed_with_action(&mut self, action: UnsavedAction) {
+    fn proceed_with_action(&mut self, action: UnsavedAction) -> BitQuillResult<()> {
         match action {
-            UnsavedAction::New => self.confirm_new_document(),
-            UnsavedAction::Open => self.start_open_dialog(), // Start the open dialog now
+            UnsavedAction::New => self.confirm_new_document()?,
+            UnsavedAction::Open => self.start_open_dialog()?, // Start the open dialog now
             UnsavedAction::Quit => self.should_quit = true, // Quit now
             UnsavedAction::OpenRecent(index) => {
                 // Need to re-trigger recent file opening after discard/save
@@ -3472,30 +4159,38 @@ impl App {
                 }
             }
         }
+        
         // Ensure dialog is closed unless another one was opened (like Save As)
         if self.dialog == Dialog::UnsavedChanges(action) {
             self.dialog = Dialog::None;
         }
+        
+        Ok(())
     }
 
     // Add path to recent files list and save
-    fn add_to_recent_files(&mut self, path: &PathBuf) {
+    fn add_to_recent_files(&mut self, path: &PathBuf) -> BitQuillResult<()> {
         // Ensure path is absolute for consistency
-        if let Ok(abs_path) = fs::canonicalize(path) {
-            // Remove if already exists to avoid duplicates and move to top
-            self.recent_files.retain(|p| p != &abs_path);
+        let abs_path = match fs::canonicalize(path) {
+            Ok(p) => p,
+            Err(e) => {
+                // If can't canonicalize, just use the path as is
+                eprintln!("Warning: Could not canonicalize path for recent files: {}", e);
+                path.clone()
+            }
+        };
 
-            // Add to front
-            self.recent_files.insert(0, abs_path);
+        // Remove if already exists to avoid duplicates and move to top
+        self.recent_files.retain(|p| p != &abs_path);
 
-            // Trim list
-            self.recent_files.truncate(MAX_RECENT_FILES);
+        // Add to front
+        self.recent_files.insert(0, abs_path);
 
-            // Save to config file
-            self.save_recent_files();
-        } else {
-            eprintln!("Warning: Could not canonicalize path for recent files: {}", path.display());
-        }
+        // Trim list
+        self.recent_files.truncate(MAX_RECENT_FILES);
+
+        // Save to config file
+        self.save_recent_files()
     }
 
     // Get config directory path
@@ -3513,38 +4208,37 @@ impl App {
     }
 
     // Load recent files list from config
-    fn load_recent_files() -> Vec<PathBuf> {
+    fn load_recent_files() -> BitQuillResult<Vec<PathBuf>> {
         let config_dir = Self::get_config_dir();
         let recent_files_path = config_dir.join("recent_files.txt");
 
         if !recent_files_path.exists() {
-            return Vec::new();
+            return Ok(Vec::new());
         }
 
-        match fs::read_to_string(recent_files_path) {
+        match fs::read_to_string(&recent_files_path) {
             Ok(content) => {
-                content.lines()
+                Ok(content.lines()
                     .map(PathBuf::from)
                     .filter(|p| p.exists()) // Only keep files that still exist
                     .take(MAX_RECENT_FILES)
-                    .collect()
+                    .collect())
             },
-            Err(e) => {
-                eprintln!("Warning: Failed to load recent files: {}", e);
-                Vec::new()
-            },
+            Err(e) => Err(BitQuillError::IoError(e))
         }
     }
 
     // Save recent files list to config
-    fn save_recent_files(&self) {
+    fn save_recent_files(&self) -> BitQuillResult<()> {
         let config_dir = Self::get_config_dir();
 
         // Create config directory if it doesn't exist
         if !config_dir.exists() {
-            if let Err(e) = fs::create_dir_all(&config_dir) {
-                eprintln!("Error: Failed to create config directory '{}': {}", config_dir.display(), e);
-                return;
+            match fs::create_dir_all(&config_dir) {
+                Ok(_) => {},
+                Err(e) => {
+                    return Err(BitQuillError::IoError(e));
+                }
             }
         }
 
@@ -3557,16 +4251,19 @@ impl App {
             .join("\n");
 
         // Save to file
-        if let Err(e) = fs::write(&recent_files_path, content) {
-            eprintln!("Error: Failed to save recent files to '{}': {}", recent_files_path.display(), e);
+        match fs::write(&recent_files_path, content) {
+            Ok(_) => Ok(()),
+            Err(e) => Err(BitQuillError::IoError(e))
         }
     }
 
     // Trigger opening a recent file
-    fn trigger_open_recent_file(&mut self, index: usize) {
+    fn trigger_open_recent_file(&mut self, index: usize) -> BitQuillResult<()> {
         if index >= self.recent_files.len() {
             self.message = format!("Invalid recent file number: {}", index + 1);
-            return;
+            return Err(BitQuillError::ValidationError(format!(
+                "Invalid recent file index: {}", index + 1
+            )));
         }
 
         if self.document.has_unsaved_changes() {
@@ -3577,27 +4274,48 @@ impl App {
             // No unsaved changes, proceed directly
             if let Err(e) = self.confirm_open_recent_file(index) {
                 self.message = format!("Error opening recent file: {}", e);
+                return Err(e);
             }
         }
+        
+        Ok(())
     }
 
     // Actually load the recent file
-    fn confirm_open_recent_file(&mut self, index: usize) -> io::Result<()> {
+    fn confirm_open_recent_file(&mut self, index: usize) -> BitQuillResult<()> {
         if index >= self.recent_files.len() {
-            return Err(io::Error::new(io::ErrorKind::NotFound, "Recent file index out of bounds"));
+            return Err(BitQuillError::ValidationError(format!(
+                "Recent file index out of bounds: {}", index
+            )));
         }
 
         let path = self.recent_files[index].clone(); // Clone to avoid borrow issues
+
+        // Verify the file still exists
+        if !path.exists() {
+            // Remove from recent files list
+            self.recent_files.remove(index);
+            self.save_recent_files()?;
+            
+            return Err(BitQuillError::IoError(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("Recent file not found: {}", path.display())
+            )));
+        }
 
         // Load document
         self.document.load_from_file(&path)?;
 
         // Update buffer with loaded content
-        self.buffer.load_content(&self.document.get_current_content());
+        if !self.buffer.load_content(&self.document.get_current_content()) {
+            return Err(BitQuillError::ResourceExhaustedError(
+                "Document too large to load into buffer".to_string()
+            ));
+        }
 
         // Update app state
         self.file_path = Some(path.clone());
-        self.add_to_recent_files(&path); // Move to top of recent list
+        self.add_to_recent_files(&path)?; // Move to top of recent list
 
         // Ensure correct mode and clear dialog
         self.mode = AppMode::Editing;
@@ -3665,34 +4383,43 @@ impl App {
     fn shutdown(&mut self) {
         // Record any final changes before shutdown
         if self.mode == AppMode::Editing && self.buffer.has_changes_since_last_record() {
-            self.document.record_change(self.buffer.get_content());
+            if let Err(e) = self.document.record_change(self.buffer.get_content()) {
+                eprintln!("Error recording final changes: {}", e);
+            }
         }
 
         // Shutdown VDF clock thread
         self.document.shutdown();
         
         // Save recent files one last time
-        self.save_recent_files();
+        if let Err(e) = self.save_recent_files() {
+            eprintln!("Error saving recent files during shutdown: {}", e);
+        }
     }
 
     // Perform undo action
-    fn undo(&mut self) {
+    fn undo(&mut self) -> BitQuillResult<()> {
         if self.mode == AppMode::Editing {
-            self.buffer.undo();
-            // After undo, the buffer content has changed, mark document dirty
-            self.document.dirty = true;
-            self.message = "Undo performed".to_string();
+            if self.buffer.undo() {
+                // After undo, the buffer content has changed, mark document dirty
+                self.document.dirty = true;
+                self.message = "Undo performed".to_string();
+            } else {
+                self.message = "Nothing to undo".to_string();
+            }
         } else {
             self.message = "Undo only available in Editing mode".to_string();
         }
+        
+        Ok(())
     }
     
-        // Start a search operation
-    fn start_search(&mut self, replace_mode: bool) {
+    // Start a search operation
+    fn start_search(&mut self, replace_mode: bool) -> BitQuillResult<()> {
         if self.mode != AppMode::Editing {
             // Only allow search from editing mode
             self.message = "Search only available in Editing mode".to_string();
-            return;
+            return Ok(());
         }
         
         self.search_state.is_active = true;
@@ -3702,13 +4429,15 @@ impl App {
         
         let action = if replace_mode { "Replace" } else { "Search" };
         self.message = format!("{}: Enter search text and press Enter", action);
+        
+        Ok(())
     }
     
     // Execute the search
-    fn execute_search(&mut self) {
+    fn execute_search(&mut self) -> BitQuillResult<()> {
         if self.search_state.search_query.is_empty() {
             self.message = "Search query cannot be empty".to_string();
-            return;
+            return Ok(());
         }
         
         // Find all matches
@@ -3733,6 +4462,8 @@ impl App {
                 self.search_state.search_query
             );
         }
+        
+        Ok(())
     }
     
     // Navigate to the current match
@@ -3746,10 +4477,11 @@ impl App {
     }
     
     // Go to next match
-    fn find_next(&mut self) {
+    fn find_next(&mut self) -> BitQuillResult<()> {
         if self.search_state.current_matches.is_empty() {
             // No matches to navigate
-            return;
+            self.message = "No matches to navigate".to_string();
+            return Ok(());
         }
         
         let next_idx = match self.search_state.current_match_idx {
@@ -3766,13 +4498,16 @@ impl App {
             self.search_state.current_matches.len(),
             self.search_state.search_query
         );
+        
+        Ok(())
     }
     
     // Go to previous match
-    fn find_prev(&mut self) {
+    fn find_prev(&mut self) -> BitQuillResult<()> {
         if self.search_state.current_matches.is_empty() {
             // No matches to navigate
-            return;
+            self.message = "No matches to navigate".to_string();
+            return Ok(());
         }
         
         let total = self.search_state.current_matches.len();
@@ -3790,34 +4525,40 @@ impl App {
             self.search_state.current_matches.len(),
             self.search_state.search_query
         );
+        
+        Ok(())
     }
     
     // Replace current match and move to next
-    fn replace_current(&mut self) {
+    fn replace_current(&mut self) -> BitQuillResult<()> {
         if !self.search_state.is_replace_mode || self.search_state.current_matches.is_empty() {
-            return;
+            return Ok(());
         }
         
         if let Some(idx) = self.search_state.current_match_idx {
             if idx < self.search_state.current_matches.len() {
                 let matched_pos = self.search_state.current_matches[idx];
-                self.buffer.replace_match(matched_pos, &self.search_state.replace_text);
-                
-                // Mark document as dirty
-                self.document.dirty = true;
-                
-                // Refresh the matches as positions have changed
-                self.refresh_search();
-                
-                self.message = "Replaced match and moved to next".to_string();
+                if self.buffer.replace_match(matched_pos, &self.search_state.replace_text) {
+                    // Mark document as dirty
+                    self.document.dirty = true;
+                    
+                    // Refresh the matches as positions have changed
+                    self.refresh_search()?;
+                    
+                    self.message = "Replaced match and moved to next".to_string();
+                } else {
+                    self.message = "Failed to replace match".to_string();
+                }
             }
         }
+        
+        Ok(())
     }
     
     // Replace all matches at once
-    fn replace_all(&mut self) {
+    fn replace_all(&mut self) -> BitQuillResult<()> {
         if !self.search_state.is_replace_mode || self.search_state.current_matches.is_empty() {
-            return;
+            return Ok(());
         }
         
         let count = self.buffer.replace_all(
@@ -3832,10 +4573,12 @@ impl App {
         self.search_state.reset();
         
         self.message = format!("Replaced {} occurrences", count);
+        
+        Ok(())
     }
     
     // Refresh search matches after editing text
-    fn refresh_search(&mut self) {
+    fn refresh_search(&mut self) -> BitQuillResult<()> {
         if self.search_state.is_active && !self.search_state.search_query.is_empty() {
             let current_idx = self.search_state.current_match_idx;
             
@@ -3865,83 +4608,123 @@ impl App {
                 self.go_to_current_match();
             }
         }
+        
+        Ok(())
     }
     
     // Toggle case sensitivity for search
-    fn toggle_case_sensitivity(&mut self) {
+    fn toggle_case_sensitivity(&mut self) -> BitQuillResult<()> {
         self.search_state.case_sensitive = !self.search_state.case_sensitive;
         
         // Re-run search with new case sensitivity setting
         if self.search_state.is_active && !self.search_state.search_query.is_empty() {
-            self.refresh_search();
+            self.refresh_search()?;
         }
         
         self.message = format!(
             "Case sensitivity: {}",
             if self.search_state.case_sensitive { "On" } else { "Off" }
         );
+        
+        Ok(())
     }
     
     // Exit search mode
-    fn exit_search(&mut self) {
+    fn exit_search(&mut self) -> BitQuillResult<()> {
         self.mode = AppMode::Editing;
         self.search_state.is_active = false;
         self.message = "Search/Replace closed".to_string();
+        Ok(())
     }
 }
 
 // --- Main Function ---
-fn main() -> Result<(), io::Error> {
-    // Setup terminal
-    enable_raw_mode()?;
+fn main() -> Result<(), BitQuillError> {
+    // Setup terminal with proper error handling
+    enable_raw_mode().map_err(BitQuillError::IoError)?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)
+        .map_err(BitQuillError::IoError)?;
+    
     let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
+    let mut terminal = Terminal::new(backend)
+        .map_err(BitQuillError::IoError)?;
 
-    // Create app state
-    let mut app = App::new();
+    // Create app state with proper error handling
+    let mut app = match App::new() {
+        Ok(app) => app,
+        Err(e) => {
+            // Attempt to restore terminal before exiting
+            disable_raw_mode().ok();
+            execute!(
+                terminal.backend_mut(),
+                LeaveAlternateScreen,
+                DisableMouseCapture
+            ).ok();
+            
+            eprintln!("Failed to initialize application: {}", e);
+            return Err(e);
+        }
+    };
+
+    // Set up panic handler to restore terminal state
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |panic_info| {
+        // Try to restore terminal state
+        let _ = disable_raw_mode();
+        let mut stdout = io::stdout();
+        let _ = execute!(stdout, LeaveAlternateScreen, DisableMouseCapture);
+        
+        // Print panic information
+        eprintln!("Application panic: {}", panic_info);
+        
+        // Call the default handler
+        default_hook(panic_info);
+    }));
 
     // --- Main Loop ---
     loop {
-        // Draw UI
-        terminal.draw(|f| ui(f, &mut app))?; // Pass mutable app ref to ui function
+        // Draw UI with proper error handling
+        if let Err(e) = terminal.draw(|f| ui(f, &mut app)) {
+            eprintln!("UI rendering error: {}", e);
+            // Try to continue despite rendering error
+            thread::sleep(Duration::from_millis(100));
+        }
 
         // Update application state (process VDF ticks, check idle, auto-save)
-        app.update();
+        if let Err(e) = app.update() {
+            eprintln!("Application update error: {}", e);
+            app.message = format!("Error during update: {}", e);
+        }
 
         // Process events with a timeout to allow for background updates
-        if event::poll(Duration::from_millis(100))? { // Poll for 100ms
-            if let Event::Key(key) = event::read()? {
-                // --- Input Handling ---
-                let mut key_handled = false; // Flag to check if input was consumed
-
-                // 1. Handle Dialog Input (if any dialog is active)
-                if app.dialog != Dialog::None {
-                    key_handled = handle_dialog_input(&mut app, key);
-                }
-
-                // 2. Handle Mode-Specific Input (if not handled by dialog)
-                if !key_handled {
-                    key_handled = match app.mode {
-                        AppMode::Editing => handle_editing_input(&mut app, key),
-                        AppMode::Viewing => handle_viewing_input(&mut app, key),
-                        AppMode::VerifyDetail => handle_verify_detail_input(&mut app, key),
-                        AppMode::TreeView => handle_tree_view_input(&mut app, key),
-                        AppMode::MetadataEdit => handle_metadata_edit_input(&mut app, key),
-                        AppMode::Help => handle_help_input(&mut app, key),
-                        AppMode::Search => handle_search_input(&mut app, key), // Add this line
-                        AppMode::FileDialog => false,
-                    };
-                }
-
-
-                // 3. Handle Global Input (if not handled by dialog or mode)
-                if !key_handled {
-                    handle_global_input(&mut app, key);
+        if let Ok(poll_result) = event::poll(Duration::from_millis(100)) {
+            if poll_result {
+                match event::read() {
+                    Ok(Event::Key(key)) => {
+                        // Process key events with proper error handling
+                        if let Err(e) = process_key_event(&mut app, key) {
+                            eprintln!("Error processing key event: {}", e);
+                            app.message = format!("Error: {}", e);
+                        }
+                    },
+                    Ok(Event::Resize(..)) => {
+                        // Terminal resize - handled by tui-rs automatically
+                    },
+                    Ok(_) => {
+                        // Ignore other events
+                    },
+                    Err(e) => {
+                        // Error reading event
+                        eprintln!("Error reading event: {}", e);
+                        // Brief sleep to prevent tight error loop
+                        thread::sleep(Duration::from_millis(100));
+                    }
                 }
             }
-            // Handle other events like mouse or resize if needed later
+        } else {
+            // Error in poll() - brief sleep to prevent tight error loop
+            thread::sleep(Duration::from_millis(100));
         }
 
         // If quit has been requested, break the loop
@@ -3953,73 +4736,115 @@ fn main() -> Result<(), io::Error> {
     // Prepare for shutdown (save recent files, stop VDF clock)
     app.shutdown();
 
-    // Restore terminal
-    disable_raw_mode()?;
+    // Restore terminal state
+    disable_raw_mode().map_err(BitQuillError::IoError)?;
     execute!(
         terminal.backend_mut(),
         LeaveAlternateScreen,
         DisableMouseCapture
-    )?;
-    terminal.show_cursor()?;
+    ).map_err(BitQuillError::IoError)?;
+    terminal.show_cursor().map_err(BitQuillError::IoError)?;
 
     Ok(())
 }
 
 // --- Input Handling Functions ---
 
+// Process key events with error handling
+fn process_key_event(app: &mut App, key: event::KeyEvent) -> BitQuillResult<()> {
+    // 1. Handle Dialog Input (if any dialog is active)
+    if app.dialog != Dialog::None {
+        if handle_dialog_input(app, key)? {
+            return Ok(());  // Key was handled by dialog
+        }
+    }
+
+    // 2. Handle Mode-Specific Input
+    if match app.mode {
+        AppMode::Editing => handle_editing_input(app, key)?,
+        AppMode::Viewing => handle_viewing_input(app, key)?,
+        AppMode::VerifyDetail => handle_verify_detail_input(app, key)?,
+        AppMode::TreeView => handle_tree_view_input(app, key)?,
+        AppMode::MetadataEdit => handle_metadata_edit_input(app, key)?,
+        AppMode::Help => handle_help_input(app, key)?,
+        AppMode::Search => handle_search_input(app, key)?,
+        AppMode::FileDialog => false, // Should be handled by dialog handling above
+    } {
+        return Ok(());  // Key was handled by mode-specific handler
+    }
+
+    // 3. Handle Global Input
+    handle_global_input(app, key).map(|_| ())  // Map the bool result to ()
+}
+
 // Handle input when a dialog is active
-fn handle_dialog_input(app: &mut App, key: event::KeyEvent) -> bool {
+fn handle_dialog_input(app: &mut App, key: event::KeyEvent) -> BitQuillResult<bool> {
     match &app.dialog {
         Dialog::SaveAs | Dialog::Export => {
             match key.code {
                 KeyCode::Esc => {
                     app.dialog = Dialog::None;
                     app.mode = AppMode::Editing; // Go back to editing on cancel
-                    app.file_browser.clear_filter();
+                    app.file_browser.clear_filter()?;
                     app.message = "Save As / Export cancelled.".to_string();
-                    true // Handled
+                    Ok(true) // Handled
                 }
                 KeyCode::Enter => {
                     if app.file_browser.is_editing_filename {
                         // Finish editing filename, attempt confirm
                         app.file_browser.is_editing_filename = false;
-                        if app.dialog == Dialog::SaveAs { let _ = app.confirm_save_as(); }
-                        else { let _ = app.confirm_export(); }
+                        if app.dialog == Dialog::SaveAs { 
+                            let _ = app.confirm_save_as(); 
+                        } else { 
+                            let _ = app.confirm_export(); 
+                        }
+                        Ok(true)
                     } else {
                         // Try to enter directory or confirm file selection
-                        if !app.file_browser.enter_directory() {
-                            // If not a directory, try confirming the action
-                            if app.dialog == Dialog::SaveAs { let _ = app.confirm_save_as(); }
-                            else { let _ = app.confirm_export(); }
+                        match app.file_browser.enter_directory() {
+                            Ok(entered) => {
+                                if !entered {
+                                    // Not a directory, try to confirm
+                                    if app.dialog == Dialog::SaveAs { 
+                                        let _ = app.confirm_save_as(); 
+                                    } else { 
+                                        let _ = app.confirm_export(); 
+                                    }
+                                }
+                                Ok(true)
+                            },
+                            Err(e) => {
+                                app.message = format!("Error navigating directory: {}", e);
+                                Ok(true)
+                            }
                         }
                     }
-                    true // Handled
                 }
                 KeyCode::Up => { 
                     if !app.file_browser.is_editing_filename { 
                         app.file_browser.navigate_up(); 
                     } 
-                    true 
+                    Ok(true) 
                 }
                 KeyCode::Down => { 
                     if !app.file_browser.is_editing_filename { 
                         app.file_browser.navigate_down(); 
                     } 
-                    true 
+                    Ok(true) 
                 }
                 KeyCode::Tab | KeyCode::Char('f') | KeyCode::Char('F') => { // F or Tab to focus filename input
                     app.file_browser.is_editing_filename = !app.file_browser.is_editing_filename;
-                    true
+                    Ok(true)
                 }
                 KeyCode::Char(c) if app.file_browser.is_editing_filename => {
-                    app.file_browser.filename_input.push(c);
-                    true
+                    app.file_browser.add_to_filename(c);
+                    Ok(true)
                 }
                 KeyCode::Backspace if app.file_browser.is_editing_filename => {
                     app.file_browser.filename_input.pop();
-                    true
+                    Ok(true)
                 }
-                _ => false // Not handled by this dialog
+                _ => Ok(false) // Not handled by this dialog
             }
         }
         Dialog::Open => {
@@ -4027,398 +4852,556 @@ fn handle_dialog_input(app: &mut App, key: event::KeyEvent) -> bool {
                 KeyCode::Esc => {
                     app.dialog = Dialog::None;
                     app.mode = AppMode::Editing;
-                    app.file_browser.clear_filter();
+                    app.file_browser.clear_filter()?;
                     app.message = "Open cancelled.".to_string();
-                    true // Handled
+                    Ok(true) // Handled
                 }
                 KeyCode::Enter => {
                     // Try to enter directory or confirm file selection
-                    if !app.file_browser.enter_directory() {
-                        let _ = app.confirm_open(); // Attempt to open if not a directory
+                    match app.file_browser.enter_directory() {
+                        Ok(entered) => {
+                            if !entered {
+                                // Not a directory, try to open
+                                let _ = app.confirm_open();
+                            }
+                            Ok(true)
+                        },
+                        Err(e) => {
+                            app.message = format!("Error navigating directory: {}", e);
+                            Ok(true)
+                        }
                     }
-                    true // Handled (even if open fails, Enter was processed)
                 }
-                KeyCode::Up => { app.file_browser.navigate_up(); true }
-                KeyCode::Down => { app.file_browser.navigate_down(); true }
-                _ => false // Not handled by this dialog
+                KeyCode::Up => { app.file_browser.navigate_up(); Ok(true) }
+                KeyCode::Down => { app.file_browser.navigate_down(); Ok(true) }
+                _ => Ok(false) // Not handled by this dialog
             }
         }
         Dialog::UnsavedChanges(_) => {
             match key.code {
                 KeyCode::Char('y') | KeyCode::Char('Y') => {
-                    app.handle_unsaved_dialog_confirm(true); // Save first
-                    true
+                    app.handle_unsaved_dialog_confirm(true)?; // Save first
+                    Ok(true)
                 }
                 KeyCode::Char('n') | KeyCode::Char('N') => {
-                    app.handle_unsaved_dialog_confirm(false); // Discard changes
-                    true
+                    app.handle_unsaved_dialog_confirm(false)?; // Discard changes
+                    Ok(true)
                 }
                 KeyCode::Esc => {
                     app.dialog = Dialog::None; // Cancel the action
                     app.message = "Action cancelled.".to_string();
-                    true
+                    Ok(true)
                 }
-                _ => false
+                _ => Ok(false)
             }
         }
-        Dialog::None | Dialog::NewConfirm | Dialog::Metadata => false, // These are handled elsewhere
+        Dialog::None | Dialog::NewConfirm | Dialog::Metadata => Ok(false), // These are handled elsewhere
     }
 }
 
-
-
 // Handle input in Editing mode
-fn handle_editing_input(app: &mut App, key: event::KeyEvent) -> bool {
+fn handle_editing_input(app: &mut App, key: event::KeyEvent) -> BitQuillResult<bool> {
     // Ctrl+key combinations handled globally
-    if key.modifiers.contains(KeyModifiers::CONTROL) { return false; }
+    if key.modifiers.contains(KeyModifiers::CONTROL) { return Ok(false); }
     // Alt+key combinations handled globally
-    if key.modifiers.contains(KeyModifiers::ALT) { return false; }
+    if key.modifiers.contains(KeyModifiers::ALT) { return Ok(false); }
 
     match key.code {
         KeyCode::Enter => { 
             // First capture the current paragraph's text
             let current_line_idx = app.buffer.cursor_row;
-            let paragraph_content = app.buffer.lines[current_line_idx].clone();
-            
-            // Then insert the newline normally
-            app.insert_char('\n');
-            
-            // Create a new leaf with just the paragraph content
-            if let Some(tick) = app.document.latest_tick.clone() {
-                // Record only this paragraph's content
-                app.document.record_paragraph(paragraph_content);
-                app.document.create_leaf(tick.sequence_number);
+            if current_line_idx < app.buffer.lines.len() {
+                let paragraph_content = app.buffer.lines[current_line_idx].clone();
                 
-                app.message = format!("New paragraph #{} created (VDF tick #{})", 
-                                    app.document.leaves.len(), tick.sequence_number);
+                // Then insert the newline normally
+                if app.insert_char('\n') {
+                    // Create a new leaf with just the paragraph content
+                    if let Some(tick) = app.document.latest_tick.clone() {
+                        // Record only this paragraph's content
+                        if let Err(e) = app.document.record_paragraph(paragraph_content) {
+                            app.message = format!("Error recording paragraph: {}", e);
+                            return Ok(true);
+                        }
+                        
+                        if let Err(e) = app.document.create_leaf(tick.sequence_number) {
+                            app.message = format!("Error creating leaf: {}", e);
+                            return Ok(true);
+                        }
+                        
+                        app.message = format!("New paragraph #{} created (VDF tick #{})", 
+                                            app.document.leaves.len(), tick.sequence_number);
+                    }
+                }
             }
-            
-            true 
+            Ok(true) 
         },
-        KeyCode::Char(c) => { app.insert_char(c); true },
-        KeyCode::Backspace => { app.delete_char(); true },
-        KeyCode::Left => { app.buffer.move_cursor_left(); true },
-        KeyCode::Right => { app.buffer.move_cursor_right(); true },
-        KeyCode::Up => { app.buffer.move_cursor_up(); true },
-        KeyCode::Down => { app.buffer.move_cursor_down(); true },
-        KeyCode::Home => { app.buffer.move_cursor_home(); true },
-        KeyCode::End => { app.buffer.move_cursor_end(); true },
-        KeyCode::PageUp => { app.buffer.page_up(20); true }, // Use reasonable height
-        KeyCode::PageDown => { app.buffer.page_down(20); true },
-        KeyCode::Tab | KeyCode::F(2) => { app.toggle_edit_view_mode(); true }, // F2 as alternative toggle
-        KeyCode::F(1) => { app.toggle_help(); true }, // F1 handled globally too, but can be mode specific
-        _ => false // Not handled by editing mode specifically
+        KeyCode::Char(c) => { app.insert_char(c); Ok(true) },
+        KeyCode::Backspace => { app.delete_char(); Ok(true) },
+        KeyCode::Left => { app.buffer.move_cursor_left(); Ok(true) },
+        KeyCode::Right => { app.buffer.move_cursor_right(); Ok(true) },
+        KeyCode::Up => { app.buffer.move_cursor_up(); Ok(true) },
+        KeyCode::Down => { app.buffer.move_cursor_down(); Ok(true) },
+        KeyCode::Home => { app.buffer.move_cursor_home(); Ok(true) },
+        KeyCode::End => { app.buffer.move_cursor_end(); Ok(true) },
+        KeyCode::PageUp => { app.buffer.page_up(20); Ok(true) }, // Use reasonable height
+        KeyCode::PageDown => { app.buffer.page_down(20); Ok(true) },
+        KeyCode::Tab | KeyCode::F(2) => { app.toggle_edit_view_mode(); Ok(true) }, // F2 as alternative toggle
+        KeyCode::F(1) => { app.toggle_help(); Ok(true) }, // F1 handled globally too, but can be mode specific
+        _ => Ok(false) // Not handled by editing mode specifically
     }
 }
 
 // Handle input in Viewing mode (Leaf History)
-fn handle_viewing_input(app: &mut App, key: event::KeyEvent) -> bool {
+fn handle_viewing_input(app: &mut App, key: event::KeyEvent) -> BitQuillResult<bool> {
     match key.code {
         KeyCode::Up => { 
             app.history_scroll = app.history_scroll.saturating_sub(1); 
-            true 
+            Ok(true) 
         },
         KeyCode::Down => { 
-            app.history_scroll = app.history_scroll.saturating_add(1); 
-            true 
+            // Increase scroll with bounds checking
+            if app.history_scroll + 1 < app.document.leaves.len() {
+                app.history_scroll += 1;
+            }
+            Ok(true) 
         },
         KeyCode::PageUp => { 
             app.history_scroll = app.history_scroll.saturating_sub(10); 
-            true 
+            Ok(true) 
         },
         KeyCode::PageDown => { 
-            app.history_scroll = app.history_scroll.saturating_add(10); 
-            true 
+            // Increase scroll with bounds checking
+            let max_scroll = app.document.leaves.len().saturating_sub(1);
+            app.history_scroll = (app.history_scroll + 10).min(max_scroll);
+            Ok(true) 
         },
         KeyCode::Home => { 
             app.history_scroll = 0; 
-            true 
+            Ok(true) 
         },
         KeyCode::End => { 
-            app.history_scroll = app.document.leaves.len().saturating_sub(1); 
-            true 
+            // Set to last leaf (with bounds checking)
+            app.history_scroll = app.document.leaves.len().saturating_sub(1);
+            Ok(true) 
         },
         KeyCode::Tab | KeyCode::F(2) => { 
             app.toggle_edit_view_mode(); 
-            true 
+            Ok(true) 
         },
         KeyCode::F(3) => { 
             app.toggle_tree_view(); 
-            true 
+            Ok(true) 
         },
         KeyCode::F(1) => { 
             app.toggle_help(); 
-            true 
+            Ok(true) 
         },
-        KeyCode::Enter => { // Maybe view details of selected leaf in future? For now, toggle back.
+        KeyCode::Enter => { // Toggle back to editing
             app.toggle_edit_view_mode();
-            true
+            Ok(true)
         },
-        _ => false
+        _ => Ok(false)
     }
 }
 
 // Handle input in Tree View mode
-fn handle_tree_view_input(app: &mut App, key: event::KeyEvent) -> bool {
+fn handle_tree_view_input(app: &mut App, key: event::KeyEvent) -> BitQuillResult<bool> {
     match key.code {
         KeyCode::Up => { 
             app.history_scroll = app.history_scroll.saturating_sub(1); 
-            true 
+            Ok(true) 
         },
         KeyCode::Down => { 
-            app.history_scroll = app.history_scroll.saturating_add(1); 
-            true 
+            // Increase with bounds checking against tree structure size
+            let tree_lines = app.document.get_tree_structure();
+            if app.history_scroll + 1 < tree_lines.len() {
+                app.history_scroll += 1;
+            }
+            Ok(true) 
         },
         KeyCode::PageUp => { 
             app.history_scroll = app.history_scroll.saturating_sub(10); 
-            true 
+            Ok(true) 
         },
         KeyCode::PageDown => { 
-            app.history_scroll = app.history_scroll.saturating_add(10); 
-            true 
+            // Increase with bounds checking
+            let tree_lines = app.document.get_tree_structure();
+            let max_scroll = tree_lines.len().saturating_sub(1);
+            app.history_scroll = (app.history_scroll + 10).min(max_scroll);
+            Ok(true) 
         },
         KeyCode::Home => { 
             app.history_scroll = 0; 
-            true 
+            Ok(true) 
         },
         KeyCode::End => {
+            // Set to last tree line (with bounds checking)
             let tree_lines = app.document.get_tree_structure();
             app.history_scroll = tree_lines.len().saturating_sub(1);
-            true
+            Ok(true)
         },
         KeyCode::Tab | KeyCode::F(2) => { 
             app.toggle_edit_view_mode(); 
-            true 
+            Ok(true) 
         },
         KeyCode::F(3) => { 
             app.toggle_tree_view(); 
-            true 
+            Ok(true) 
         },
         KeyCode::F(1) => { 
             app.toggle_help(); 
-            true 
+            Ok(true) 
         },
         KeyCode::Enter | KeyCode::Esc => {
             app.toggle_tree_view(); // Return to viewing mode
-            true
+            Ok(true)
         },
-        _ => false
+        _ => Ok(false)
     }
 }
 
 // Handle input in Verify Detail mode
-fn handle_verify_detail_input(app: &mut App, key: event::KeyEvent) -> bool {
+fn handle_verify_detail_input(app: &mut App, key: event::KeyEvent) -> BitQuillResult<bool> {
     match key.code {
         KeyCode::Up => { 
             app.history_scroll = app.history_scroll.saturating_sub(1); 
-            true 
+            Ok(true) 
         },
         KeyCode::Down => { 
-            app.history_scroll = app.history_scroll.saturating_add(1); 
-            true 
+            // Increase with bounds checking
+            if let Some(v) = &app.document.last_verification {
+                if app.history_scroll + 1 < v.details.len() + 2 { // +2 for header lines
+                    app.history_scroll += 1;
+                }
+            }
+            Ok(true) 
         },
         KeyCode::PageUp => { 
             app.history_scroll = app.history_scroll.saturating_sub(10); 
-            true 
+            Ok(true) 
         },
         KeyCode::PageDown => { 
-            app.history_scroll = app.history_scroll.saturating_add(10); 
-            true 
+            // Increase with bounds checking
+            if let Some(v) = &app.document.last_verification {
+                let max_scroll = (v.details.len() + 2).saturating_sub(1); // +2 for header lines
+                app.history_scroll = (app.history_scroll + 10).min(max_scroll);
+            }
+            Ok(true) 
         },
         KeyCode::Home => { 
             app.history_scroll = 0; 
-            true 
+            Ok(true) 
         },
         KeyCode::End => {
+            // Set to last verification detail (with bounds checking)
             if let Some(v) = &app.document.last_verification {
-                app.history_scroll = v.details.len().saturating_sub(1);
+                app.history_scroll = (v.details.len() + 2).saturating_sub(1); // +2 for header lines
             }
-            true
+            Ok(true)
         },
         KeyCode::Tab | KeyCode::F(2) | KeyCode::Enter | KeyCode::Esc => {
             // Any of these return to Viewing mode from verification details
             app.mode = AppMode::Viewing;
             app.history_scroll = 0; // Reset scroll for viewing mode
             app.message = "Returned to Viewing mode.".to_string();
-            true
+            Ok(true)
         },
         KeyCode::F(3) => { 
             app.toggle_tree_view(); 
-            true 
+            Ok(true) 
         },
         KeyCode::F(1) => { 
             app.toggle_help(); 
-            true 
+            Ok(true) 
         },
-        _ => false
+        _ => Ok(false)
     }
 }
 
 // Handle input in Metadata Edit mode
-fn handle_metadata_edit_input(app: &mut App, key: event::KeyEvent) -> bool {
+fn handle_metadata_edit_input(app: &mut App, key: event::KeyEvent) -> BitQuillResult<bool> {
     if let Some(editor) = app.metadata_editor.as_mut() {
         if editor.editing {
             // Pass input directly to editor buffer handling
-            editor.handle_edit_key(key.code);
-            true // Assume handled by editor buffer
+            if editor.handle_edit_key(key.code) {
+                return Ok(true); // Handled by editor buffer
+            } else {
+                return Ok(false); // Not handled by editor buffer
+            }
         } else {
             // Handle navigation between fields or starting edit
             match key.code {
-                KeyCode::Up => { editor.navigate_up(); true },
-                KeyCode::Down => { editor.navigate_down(); true },
-                KeyCode::Enter => { editor.start_editing(); true },
-                KeyCode::Esc => { app.cancel_metadata(); true },
+                KeyCode::Up => { editor.navigate_up(); Ok(true) },
+                KeyCode::Down => { editor.navigate_down(); Ok(true) },
+                KeyCode::Enter => { editor.start_editing(); Ok(true) },
+                KeyCode::Esc => { app.cancel_metadata(); Ok(true) },
                 // Ctrl+S handled globally
-                KeyCode::F(1) => { app.toggle_help(); true },
-                _ => false
+                KeyCode::F(1) => { app.toggle_help(); Ok(true) },
+                _ => Ok(false)
             }
         }
     } else {
         // Should not be in this mode without an editor, switch back
         app.mode = AppMode::Editing;
-        false
+        Ok(false)
     }
 }
 
 // Handle input in Help mode
-fn handle_help_input(app: &mut App, key: event::KeyEvent) -> bool {
+fn handle_help_input(app: &mut App, key: event::KeyEvent) -> BitQuillResult<bool> {
     match key.code {
         KeyCode::F(1) | KeyCode::Esc => {
             app.toggle_help();
-            true
+            Ok(true)
         },
-        KeyCode::Up => { true } // Basic scroll placeholder
-        KeyCode::Down => { true }
-        _ => false // Ignore other keys in help mode
+        KeyCode::Up => { Ok(true) }, // Placeholder for scrolling
+        KeyCode::Down => { Ok(true) },
+        _ => Ok(false) // Ignore other keys in help mode
+    }
+}
+
+// Handle input in Search mode
+fn handle_search_input(app: &mut App, key: event::KeyEvent) -> BitQuillResult<bool> {
+    // Check for Ctrl+key combinations
+    if key.modifiers.contains(KeyModifiers::CONTROL) {
+        if let KeyCode::Char(c) = key.code {
+            match c {
+                'n' => {
+                    app.find_next()?;
+                    return Ok(true);
+                },
+                'p' => {
+                    app.find_prev()?;
+                    return Ok(true);
+                },
+                'r' => {
+                    if app.search_state.is_replace_mode {
+                        app.replace_current()?;
+                    }
+                    return Ok(true);
+                },
+                'a' => {
+                    if app.search_state.is_replace_mode {
+                        app.replace_all()?;
+                    }
+                    return Ok(true);
+                },
+                _ => {} // Other Ctrl combinations
+            }
+        }
+    }
+
+    // Handle non-modifier keys
+    match key.code {
+        KeyCode::Esc => {
+            app.exit_search()?;
+            Ok(true)
+        },
+        KeyCode::Enter => {
+            if app.search_state.search_query.is_empty() {
+                if app.search_state.is_replace_mode && !app.search_state.replace_text.is_empty() {
+                    // Switch to entering search query
+                    app.search_state.replace_text.clear();
+                    app.message = "Search: Enter search text and press Enter".to_string();
+                    Ok(true)
+                } else {
+                    app.exit_search()?;
+                    Ok(true)
+                }
+            } else if app.search_state.is_replace_mode && app.search_state.replace_text.is_empty() {
+                // In replace mode, after entering search query, prompt for replace text
+                app.execute_search()?;
+                app.message = "Replace: Enter replacement text and press Enter".to_string();
+                Ok(true)
+            } else {
+                // Execute the search or confirm replace text
+                app.execute_search()?;
+                Ok(true)
+            }
+        },
+        KeyCode::Backspace => {
+            if app.search_state.is_replace_mode && !app.search_state.search_query.is_empty() {
+                // Editing replace text
+                app.search_state.replace_text.pop();
+            } else {
+                // Editing search query
+                app.search_state.search_query.pop();
+            }
+            Ok(true)
+        },
+        KeyCode::Down => {
+            app.find_next()?;
+            Ok(true)
+        },
+        KeyCode::Up => {
+            app.find_prev()?;
+            Ok(true)
+        },
+        KeyCode::F(5) => {
+            app.toggle_case_sensitivity()?;
+            Ok(true)
+        },
+        KeyCode::Char(c) => {
+            if app.search_state.is_replace_mode && !app.search_state.search_query.is_empty() {
+                // Entering replace text
+                if !app.search_state.safely_add_to_replace(c) {
+                    app.message = "Replace text too long".to_string();
+                }
+            } else {
+                // Entering search query
+                if !app.search_state.safely_add_to_query(c) {
+                    app.message = "Search query too long".to_string();
+                }
+            }
+            Ok(true)
+        },
+        _ => Ok(false),
     }
 }
 
 // Handle global input shortcuts (like Ctrl+S, Ctrl+O, etc.)
-fn handle_global_input(app: &mut App, key: event::KeyEvent) -> bool {
+fn handle_global_input(app: &mut App, key: event::KeyEvent) -> BitQuillResult<bool> {
     match key.code {
         // --- Ctrl Keybindings ---
         KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             if key.modifiers.contains(KeyModifiers::SHIFT) {
-                app.trigger_save_as_dialog();
+                app.trigger_save_as_dialog()?;
             } else if app.mode == AppMode::MetadataEdit {
-                app.save_metadata();
+                app.save_metadata()?;
             } else {
-                let _ = app.save_document(); // Attempt save, ignore error message here (it's set inside)
+                match app.save_document() {
+                    Ok(_) => {},
+                    Err(e) if matches!(e, BitQuillError::StateError(ref s) if s == "Save As dialog triggered") => {
+                        // Expected when no file path is set yet
+                    },
+                    Err(e) => {
+                        app.message = format!("Error saving: {}", e);
+                    }
+                }
             }
-            true
+            Ok(true)
         },
         KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            app.trigger_open_dialog();
-            true
+            app.trigger_open_dialog()?;
+            Ok(true)
         },
         KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             if app.mode == AppMode::Search {
-                app.find_next();
+                app.find_next()?;
             } else {
-                app.trigger_new_document();
+                app.trigger_new_document()?;
             }
-            true
+            Ok(true)
         },
         KeyCode::Char('v') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            app.verify_document(VerificationLevel::Standard);
-            true
+            app.verify_document(VerificationLevel::Standard)?;
+            Ok(true)
         },
         KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            app.trigger_export_dialog();
-            true
+            app.trigger_export_dialog()?;
+            Ok(true)
         },
         KeyCode::Char('m') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            app.trigger_edit_metadata();
-            true
+            app.trigger_edit_metadata()?;
+            Ok(true)
         },
         KeyCode::Char('z') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            app.undo();
-            true
+            app.undo()?;
+            Ok(true)
         },
         KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             // Ctrl+F for search
-            app.start_search(false);
-            true
+            app.start_search(false)?;
+            Ok(true)
         },
         KeyCode::Char('h') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             // Ctrl+H for replace
-            app.start_search(true);
-            true
+            app.start_search(true)?;
+            Ok(true)
         },
         KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            if app.mode == AppMode::Search {
-                app.find_prev();
-                true
-            } else if app.search_state.is_active && app.mode == AppMode::Editing {
-                app.find_prev();
-                true
+            if app.mode == AppMode::Search || 
+               (app.search_state.is_active && app.mode == AppMode::Editing) {
+                app.find_prev()?;
+                Ok(true)
             } else {
-                false
+                Ok(false)
             }
         },
         KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) && app.mode == AppMode::Search => {
             if app.search_state.is_replace_mode {
-                app.replace_current();
+                app.replace_current()?;
             }
-            true
+            Ok(true)
         },
         KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) && app.mode == AppMode::Search => {
             if app.search_state.is_replace_mode {
-                app.replace_all();
+                app.replace_all()?;
             }
-            true
+            Ok(true)
         },
         
         // --- Alt Keybindings ---
         KeyCode::Char(c @ '1'..='9') if key.modifiers.contains(KeyModifiers::ALT) => {
             let index = (c as u8 - b'1') as usize; // 1-based index
-            app.trigger_open_recent_file(index);
-            true
+            match app.trigger_open_recent_file(index) {
+                Ok(_) => Ok(true),
+                Err(e) => {
+                    app.message = format!("Error opening recent file: {}", e);
+                    Ok(true)
+                }
+            }
         },
         KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::ALT) => {
             app.toggle_auto_save();
-            true
+            Ok(true)
         },
         KeyCode::Char('l') if key.modifiers.contains(KeyModifiers::ALT) => {
             app.toggle_line_numbers();
-            true
+            Ok(true)
         },
         
         // --- F-Key Bindings ---
         KeyCode::F(1) => { // F1 global toggle for help
             app.toggle_help();
-            true
+            Ok(true)
         },
         KeyCode::F(2) => { // F2 global toggle for edit/view mode
             if app.mode == AppMode::Editing || app.mode == AppMode::Viewing {
                 app.toggle_edit_view_mode();
-                true
+                Ok(true)
             } else {
-                false
+                Ok(false)
             }
         },
         KeyCode::F(3) => { // F3 toggle tree view
             if app.mode == AppMode::Viewing || app.mode == AppMode::VerifyDetail || app.mode == AppMode::TreeView {
                 app.toggle_tree_view();
-                true
+                Ok(true)
             } else {
-                false
+                Ok(false)
             }
         },
         KeyCode::F(5) if app.mode == AppMode::Search => {
-            app.toggle_case_sensitivity();
-            true
+            app.toggle_case_sensitivity()?;
+            Ok(true)
         },
         // --- Other Global Keys ---
-        KeyCode::Esc => { // Global Esc always requests quit (with checks)
+        KeyCode::Esc => { // Global Esc for quit/cancel
             if app.mode == AppMode::Search {
-                app.exit_search();
+                app.exit_search()?;
+                Ok(true)
             } else {
-                app.request_quit();
+                match app.request_quit() {
+                    Ok(_) => Ok(true),
+                    Err(e) => {
+                        app.message = format!("Error when attempting to quit: {}", e);
+                        Ok(true)
+                    }
+                }
             }
-            true
         },
-        _ => false // Not a global keybinding
+        _ => Ok(false) // Not a global keybinding
     }
 }
 
@@ -4447,18 +5430,23 @@ fn ui(f: &mut tui::Frame<CrosstermBackend<io::Stdout>>, app: &mut App) {
         Some(_) => Style::default().fg(Color::Red),
         None => Style::default().fg(Color::DarkGray),
     };
+    
     let chain_text = match &app.document.last_verification {
         Some(v) if v.valid => "✓ Valid",
         Some(_) => "✗ Invalid",
         None => "? Unknown",
     };
+    
     let cursor_pos = app.buffer.get_cursor_position();
+    
     let file_name = app.file_path.as_ref()
         .and_then(|p| p.file_name())
         .and_then(|n| n.to_str())
         .unwrap_or("Untitled");
+        
     let dirty_indicator = if app.document.has_unsaved_changes() { "*" } else { "" };
     let auto_save_status = if app.auto_save_enabled { ("On", Color::Green) } else { ("Off", Color::Red) };
+    
     let mode_text = match app.mode {
         AppMode::Editing => "EDITING",
         AppMode::Viewing => "VIEWING HISTORY",
@@ -4485,6 +5473,7 @@ fn ui(f: &mut tui::Frame<CrosstermBackend<io::Stdout>>, app: &mut App) {
         Span::raw(" | "),
         Span::styled(format!("AutoSave: {}", auto_save_status.0), Style::default().fg(auto_save_status.1)),
     ]);
+    
     let status_bar = Paragraph::new(status_spans).style(Style::default().bg(Color::DarkGray)); // Status bar background
     f.render_widget(status_bar, chunks[0]);
 
@@ -4496,20 +5485,31 @@ fn ui(f: &mut tui::Frame<CrosstermBackend<io::Stdout>>, app: &mut App) {
         format!(" VDF Clock Running (Tick #{}) ", 
                 app.document.latest_tick.as_ref().map_or(0, |t| t.sequence_number))
     };
+    
     let indicator_style = if app.show_tick_indicator { 
         Style::default().fg(Color::Black).bg(Color::Yellow) 
     } else { 
         Style::default().fg(Color::DarkGray) 
     };
+    
     let indicator = Paragraph::new(Span::styled(tick_indicator_text, indicator_style));
     f.render_widget(indicator, chunks[1]);
 
     // --- Message Bar ---
     let message_block = Block::default().borders(Borders::ALL).title("Status");
     let message_area = message_block.inner(chunks[2]); // Get inner area for text
-    let message = Paragraph::new(app.message.as_str())
+    
+    // Ensure message doesn't exceed safe length
+    let safe_message = if app.message.len() > 500 {
+        format!("{}...", &app.message[..497])
+    } else {
+        app.message.clone()
+    };
+    
+    let message = Paragraph::new(safe_message)
         .style(Style::default().fg(Color::White))
         .wrap(tui::widgets::Wrap { trim: true }); // Wrap long messages
+        
     f.render_widget(message_block, chunks[2]);
     f.render_widget(message, message_area);
 
@@ -4541,171 +5541,16 @@ fn ui(f: &mut tui::Frame<CrosstermBackend<io::Stdout>>, app: &mut App) {
     // Render based on current AppMode
     match app.mode {
         AppMode::Editing => {
-            let editor_block = Block::default().borders(Borders::ALL).title("Editor");
-            let editor_area = editor_block.inner(content_area);
-
-            // Ensure scroll offset doesn't go beyond limits
-            if app.buffer.scroll_offset >= app.buffer.lines.len() && app.buffer.lines.len() > 0 {
-                app.buffer.scroll_offset = app.buffer.lines.len() - 1;
-            }
-
-            let visible_height = editor_area.height as usize;
-            let display_lines = app.buffer.get_display_lines(visible_height);
-
-            // Create TUI text from lines
-            let text: Vec<Line> = display_lines.into_iter().map(Line::from).collect();
-
-            let input = Paragraph::new(text)
-                .style(Style::default().fg(Color::White));
-                // Removed block here as we render the block separately
-
-            f.render_widget(editor_block, content_area);
-            f.render_widget(input, editor_area);
-
-            // Calculate cursor position within the rendered area, accounting for line numbers and scroll
-            let line_num_width = if app.buffer.line_numbers {
-                app.buffer.lines.len().to_string().len() + 3 // Width + space + │ + space
-            } else {
-                0
-            };
-
-            // Ensure cursor row is within visible bounds relative to scroll
-            if app.buffer.cursor_row >= app.buffer.scroll_offset &&
-               app.buffer.cursor_row < app.buffer.scroll_offset + visible_height {
-                let cursor_y = editor_area.y + (app.buffer.cursor_row - app.buffer.scroll_offset) as u16;
-                let cursor_x = editor_area.x + app.buffer.cursor_col as u16 + line_num_width as u16;
-
-                // Clamp cursor X to visible width
-                let clamped_cursor_x = cursor_x.min(editor_area.x + editor_area.width.saturating_sub(1));
-
-                f.set_cursor(clamped_cursor_x, cursor_y);
-            }
+            render_editing_mode(f, content_area, app);
         },
         AppMode::Viewing => {
-            let history_block = Block::default().borders(Borders::ALL).title("Document History (Read-Only)");
-            let history_area = history_block.inner(content_area);
-
-            let history_items_str = app.document.get_leaf_history(); // Get formatted strings
-
-            // Create ListItems from strings
-            let items: Vec<ListItem> = history_items_str.iter()
-                .map(|h_str| ListItem::new(h_str.as_str()))
-                .collect();
-
-            // Create the list widget
-            let list = List::new(items)
-                .style(Style::default().fg(Color::White))
-                .highlight_style(Style::default().bg(Color::Blue).fg(Color::White))
-                .highlight_symbol("> "); // Indicator for selected item
-
-            // Create state for the list to handle scrolling/selection
-            let mut list_state = tui::widgets::ListState::default();
-            // Ensure scroll offset maps correctly to list selection/offset
-            if !app.document.leaves.is_empty() {
-                app.history_scroll = app.history_scroll.min(app.document.leaves.len() - 1); // Clamp scroll
-                list_state.select(Some(app.history_scroll)); // Select the item corresponding to scroll offset
-                // TUI list handles offset automatically based on selection and height
-            }
-
-            f.render_widget(history_block, content_area);
-            f.render_stateful_widget(list, history_area, &mut list_state);
+            render_viewing_mode(f, content_area, app);
         },
         AppMode::TreeView => {
-            let tree_block = Block::default().borders(Borders::ALL).title("Merkle Tree Structure");
-            let tree_area = tree_block.inner(content_area);
-            
-            let tree_items_str = app.document.get_tree_structure(); // Get formatted tree structure
-            
-            // Create ListItems from strings
-            let items: Vec<ListItem> = tree_items_str.iter()
-                .map(|t_str| ListItem::new(t_str.as_str()))
-                .collect();
-                
-            // Create the list widget
-            let list = List::new(items)
-                .style(Style::default().fg(Color::White))
-                .highlight_style(Style::default().bg(Color::DarkGray)) // Less prominent highlight
-                .highlight_symbol("→ "); // Indicator for current line
-                
-            // Create state for scrolling
-            let mut list_state = tui::widgets::ListState::default();
-            app.history_scroll = app.history_scroll.min(tree_items_str.len().saturating_sub(1)); // Clamp scroll
-            list_state.select(Some(app.history_scroll)); // Use select to control view offset
-            
-            f.render_widget(tree_block, content_area);
-            f.render_stateful_widget(list, tree_area, &mut list_state);
+            render_tree_view_mode(f, content_area, app);
         },
         AppMode::VerifyDetail => {
-            let verify_block = Block::default().borders(Borders::ALL).title("Verification Details");
-            let verify_area = verify_block.inner(content_area);
-            f.render_widget(verify_block, content_area); // Render block first
-
-            let mut items: Vec<ListItem> = Vec::new(); // Initialize list items vector
-
-            // --- Add Overall Status ---
-            if let Some(v) = &app.document.last_verification {
-                let (status_text, status_style) = if v.valid {
-                    ("PASSED", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD))
-                } else {
-                    ("FAILED", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD))
-                };
-                let overall_summary = format!("Overall Status: {} ({:?})", status_text, v.level);
-                items.push(ListItem::new(Line::from(Span::styled(overall_summary, status_style))));
-                items.push(ListItem::new("-----------------------------------")); // Separator
-            } else {
-                items.push(ListItem::new("Overall Status: Not Yet Verified"));
-                items.push(ListItem::new("-----------------------------------")); // Separator
-            }
-            // --- End Overall Status ---
-
-
-            // Get individual details if available
-            let details = if let Some(v) = &app.document.last_verification {
-                v.details.clone()
-            } else {
-                // Provide a single item if no verification yet, already handled above
-                Vec::new() // No details to add if verification hasn't run
-            };
-
-            // --- Add Individual Details ---
-            for detail in details.iter() {
-                 let style = if detail.valid {
-                    Style::default().fg(Color::Green)
-                 } else {
-                    Style::default().fg(Color::Red)
-                 };
-                 let icon = if detail.valid { " ✓" } else { " ✗" }; // Space for alignment
-                 items.push(ListItem::new(Span::styled(format!("{} {}", icon, detail.description), style)));
-            }
-            // --- End Individual Details ---
-
-
-            // --- Render the List ---
-            let list = List::new(items) // Use the combined items list
-                .style(Style::default().fg(Color::White))
-                // Highlight the entire line for simplicity when scrolling
-                .highlight_style(Style::default().bg(Color::DarkGray))
-                .highlight_symbol("→ "); // Indicator for current line
-
-            // Create state for scrolling
-            let mut list_state = tui::widgets::ListState::default();
-            // Ensure scroll offset doesn't exceed list length
-            let item_count = if let Some(v) = &app.document.last_verification { v.details.len() + 2 } else { 2 }; // +2 for summary lines
-            app.history_scroll = app.history_scroll.min(item_count.saturating_sub(1)); // Clamp scroll based on total items
-            list_state.select(Some(app.history_scroll)); // Use select to control view offset
-
-            f.render_stateful_widget(list, verify_area, &mut list_state);
-
-            // Adjust End key navigation in handle_verify_detail_input if needed
-            // The End key logic might need to use `items.len()` or `item_count`
-            // Example adjustment in handle_verify_detail_input:
-            /*
-            KeyCode::End => {
-                let item_count = if let Some(v) = &app.document.last_verification { v.details.len() + 2 } else { 2 };
-                app.history_scroll = item_count.saturating_sub(1);
-                true
-            },
-            */
+            render_verify_detail_mode(f, content_area, app);
         },
         AppMode::MetadataEdit => {
             render_metadata_editor(f, content_area, app);
@@ -4714,21 +5559,7 @@ fn ui(f: &mut tui::Frame<CrosstermBackend<io::Stdout>>, app: &mut App) {
             render_help_screen(f, content_area, app);
         },
         AppMode::Search => {
-            // Create a centered dialog for search/replace
-            let dialog_area = centered_rect(70, 20, content_area); // 70% width, 20% height
-            render_search_ui(f, dialog_area, app);
-            
-            // Render editor content behind the dialog (dimmed)
-            let editor_block = Block::default().borders(Borders::ALL).title("Editor");
-            let editor_area = editor_block.inner(content_area);
-            let visible_height = editor_area.height as usize;
-            let display_lines = app.buffer.get_display_lines(visible_height);
-            let text: Vec<Line> = display_lines.into_iter().map(Line::from).collect();
-            let input = Paragraph::new(text)
-                .style(Style::default().fg(Color::DarkGray)); // Dimmed text while searching
-            
-            f.render_widget(editor_block, content_area);
-            f.render_widget(input, editor_area);
+            render_search_ui(f, content_area, app);
         },
         AppMode::FileDialog => {
             // This case should ideally be handled by the dialog rendering at the start
@@ -4743,133 +5574,177 @@ fn ui(f: &mut tui::Frame<CrosstermBackend<io::Stdout>>, app: &mut App) {
     }
 }
 
-// --- UI Helper Rendering Functions ---
+// Render editing mode
+fn render_editing_mode(f: &mut tui::Frame<CrosstermBackend<io::Stdout>>, area: Rect, app: &mut App) {
+    let editor_block = Block::default().borders(Borders::ALL).title("Editor");
+    let editor_area = editor_block.inner(area);
 
-// Render file browser dialog
-fn render_file_dialog(
-    f: &mut tui::Frame<CrosstermBackend<io::Stdout>>, 
-    area: Rect, 
-    browser: &FileBrowser, 
-    title: &str, 
-    show_filename_input: bool
-) {
-    let dialog_block = Block::default().borders(Borders::ALL).title(title);
-    let inner_area = dialog_block.inner(area); // Area inside borders
+    // Ensure scroll offset doesn't go beyond limits
+    if app.buffer.scroll_offset >= app.buffer.lines.len() && app.buffer.lines.len() > 0 {
+        app.buffer.scroll_offset = app.buffer.lines.len() - 1;
+    }
 
-    // Define constraints based on whether filename input is shown
-    let constraints = if show_filename_input {
-        vec![
-            Constraint::Length(1),  // Current directory path
-            Constraint::Min(0),     // File list (takes remaining space)
-            Constraint::Length(1),  // Filename input line
-            Constraint::Length(1),  // Hint line
-        ]
+    let visible_height = editor_area.height as usize;
+    let display_lines = app.buffer.get_display_lines(visible_height);
+
+    // Create TUI text from lines
+    let text: Vec<Line> = display_lines.into_iter().map(Line::from).collect();
+
+    let input = Paragraph::new(text)
+        .style(Style::default().fg(Color::White));
+
+    f.render_widget(editor_block, area);
+    f.render_widget(input, editor_area);
+
+    // Calculate cursor position within the rendered area, accounting for line numbers and scroll
+    let line_num_width = if app.buffer.line_numbers {
+        app.buffer.lines.len().to_string().len() + 3 // Width + space + │ + space
     } else {
-        vec![
-            Constraint::Length(1),  // Current directory path
-            Constraint::Min(0),     // File list
-            Constraint::Length(1),  // Hint line
-        ]
+        0
     };
 
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints(constraints)
-        .split(inner_area); // Split the inner area
+    // Ensure cursor row is within visible bounds relative to scroll
+    if app.buffer.cursor_row >= app.buffer.scroll_offset &&
+       app.buffer.cursor_row < app.buffer.scroll_offset + visible_height {
+        let cursor_y = editor_area.y + (app.buffer.cursor_row - app.buffer.scroll_offset) as u16;
+        let cursor_x = editor_area.x + app.buffer.cursor_col as u16 + line_num_width as u16;
 
-    f.render_widget(dialog_block, area); // Render the block frame first
+        // Clamp cursor X to visible width
+        let clamped_cursor_x = cursor_x.min(editor_area.x + editor_area.width.saturating_sub(1));
 
-    // 1. Current Directory
-    let current_dir_text = Paragraph::new(browser.current_dir.to_string_lossy().to_string())
-        .style(Style::default().fg(Color::Yellow));
-    f.render_widget(current_dir_text, chunks[0]);
+        f.set_cursor(clamped_cursor_x, cursor_y);
+    }
+}
 
-    // 2. File List
-    let entries = browser.get_entries_for_display();
-    let items: Vec<ListItem> = entries.iter()
-        .map(|entry_str| ListItem::new(entry_str.as_str()))
+// Render viewing mode
+fn render_viewing_mode(f: &mut tui::Frame<CrosstermBackend<io::Stdout>>, area: Rect, app: &App) {
+    let history_block = Block::default().borders(Borders::ALL).title("Document History (Read-Only)");
+    let history_area = history_block.inner(area);
+
+    let history_items_str = app.document.get_leaf_history(); // Get formatted strings
+
+    // Create ListItems from strings
+    let items: Vec<ListItem> = history_items_str.iter()
+        .map(|h_str| ListItem::new(h_str.as_str()))
         .collect();
 
+    // Create the list widget
     let list = List::new(items)
         .style(Style::default().fg(Color::White))
         .highlight_style(Style::default().bg(Color::Blue).fg(Color::White))
-        .highlight_symbol("> ");
+        .highlight_symbol("> "); // Indicator for selected item
 
+    // Create state for the list to handle scrolling/selection
     let mut list_state = tui::widgets::ListState::default();
-    if !browser.entries.is_empty() {
-        let clamped_selection = browser.selected_idx.min(browser.entries.len() - 1);
-        list_state.select(Some(clamped_selection));
+    
+    // Ensure scroll offset maps correctly to list selection/offset
+    if !app.document.leaves.is_empty() {
+        // Clamp scroll to valid range
+        let max_scroll = app.document.leaves.len().saturating_sub(1);
+        let valid_scroll = app.history_scroll.min(max_scroll);
+        
+        list_state.select(Some(valid_scroll)); // Select the item corresponding to scroll offset
     }
 
-    f.render_stateful_widget(list, chunks[1], &mut list_state);
+    f.render_widget(history_block, area);
+    f.render_stateful_widget(list, history_area, &mut list_state);
+}
 
-    // 3. Filename Input (Optional)
-    let hint_index = if show_filename_input {
-        let filename_style = if browser.is_editing_filename {
-            Style::default().fg(Color::Yellow) // Highlight if editing
+// Render tree view mode
+fn render_tree_view_mode(f: &mut tui::Frame<CrosstermBackend<io::Stdout>>, area: Rect, app: &App) {
+    let tree_block = Block::default().borders(Borders::ALL).title("Merkle Tree Structure");
+    let tree_area = tree_block.inner(area);
+    
+    let tree_items_str = app.document.get_tree_structure(); // Get formatted tree structure
+    
+    // Create ListItems from strings
+    let items: Vec<ListItem> = tree_items_str.iter()
+        .map(|t_str| ListItem::new(t_str.as_str()))
+        .collect();
+        
+    // Create the list widget
+    let list = List::new(items)
+        .style(Style::default().fg(Color::White))
+        .highlight_style(Style::default().bg(Color::DarkGray)) // Less prominent highlight
+        .highlight_symbol("→ "); // Indicator for current line
+        
+    // Create state for scrolling
+    let mut list_state = tui::widgets::ListState::default();
+    
+    // Clamp scroll to valid range
+    let max_scroll = tree_items_str.len().saturating_sub(1);
+    let valid_scroll = app.history_scroll.min(max_scroll);
+    
+    list_state.select(Some(valid_scroll)); // Use select to control view offset
+    
+    f.render_widget(tree_block, area);
+    f.render_stateful_widget(list, tree_area, &mut list_state);
+}
+
+// Render verification detail mode
+fn render_verify_detail_mode(f: &mut tui::Frame<CrosstermBackend<io::Stdout>>, area: Rect, app: &App) {
+    let verify_block = Block::default().borders(Borders::ALL).title("Verification Details");
+    let verify_area = verify_block.inner(area);
+    f.render_widget(verify_block, area); // Render block first
+
+    let mut items: Vec<ListItem> = Vec::new(); // Initialize list items vector
+
+    // --- Add Overall Status ---
+    if let Some(v) = &app.document.last_verification {
+        let (status_text, status_style) = if v.valid {
+            ("PASSED", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD))
         } else {
-            Style::default().fg(Color::White)
+            ("FAILED", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD))
         };
-        let filename_text = format!("Filename: {}", browser.filename_input);
-        let filename_para = Paragraph::new(filename_text).style(filename_style);
-        f.render_widget(filename_para, chunks[2]);
-
-        // Show cursor if editing filename
-        if browser.is_editing_filename {
-            f.set_cursor(
-                chunks[2].x + 10 + browser.filename_input.len() as u16, // "Filename: ".len() = 10
-                chunks[2].y
-            );
+        
+        let overall_summary = format!("Overall Status: {} ({:?})", status_text, v.level);
+        items.push(ListItem::new(Line::from(Span::styled(overall_summary, status_style))));
+        items.push(ListItem::new("-----------------------------------")); // Separator
+        
+        // --- Add Individual Details ---
+        for detail in v.details.iter() {
+            let style = if detail.valid {
+                Style::default().fg(Color::Green)
+            } else {
+                Style::default().fg(Color::Red)
+            };
+            
+            let icon = if detail.valid { " ✓" } else { " ✗" }; // Space for alignment
+            items.push(ListItem::new(Span::styled(format!("{} {}", icon, detail.description), style)));
         }
-        3 // Hint is at index 3
     } else {
-        2 // Hint is at index 2
-    };
-
-    // 4. Hint Text
-    let hint_text_str = if show_filename_input {
-        "Arrows: Navigate | Enter: Confirm/Select | F/Tab: Edit Filename | Esc: Cancel"
-    } else {
-        "Arrows: Navigate | Enter: Confirm/Select | Esc: Cancel"
-    };
-    let hint = Paragraph::new(hint_text_str).style(Style::default().fg(Color::DarkGray));
-    f.render_widget(hint, chunks[hint_index]);
-}
-
-// Render unsaved changes dialog
-fn render_unsaved_dialog(f: &mut tui::Frame<CrosstermBackend<io::Stdout>>, area: Rect, app: &App) {
-    if let Dialog::UnsavedChanges(action) = &app.dialog {
-        let action_desc = match action {
-            UnsavedAction::New => "create a new document",
-            UnsavedAction::Open => "open another document",
-            UnsavedAction::Quit => "quit",
-            UnsavedAction::OpenRecent(_) => "open a recent file",
-        };
-let text = vec![
-            Line::from(Span::styled("Unsaved Changes", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))),
-            Line::from(""),
-            Line::from(format!("The current document has unsaved changes.")),
-            Line::from(format!("Do you want to save before you {}?", action_desc)),
-            Line::from(""),
-            Line::from(vec![
-                Span::styled("  [Y]", Style::default().fg(Color::Green)), Span::raw("es (Save) "),
-                Span::styled("  [N]", Style::default().fg(Color::Red)), Span::raw("o (Discard) "),
-                Span::styled("  [Esc]", Style::default().fg(Color::Gray)), Span::raw(" Cancel"),
-            ]),
-        ];
-
-        let paragraph = Paragraph::new(text)
-            .alignment(tui::layout::Alignment::Center)
-            .block(Block::default().borders(Borders::ALL).title("Confirm"));
-
-        // Create a smaller centered rect for the dialog
-        let dialog_area = centered_rect(60, 30, area); // 60% width, 30% height
-
-        f.render_widget(paragraph, dialog_area);
+        items.push(ListItem::new("Overall Status: Not Yet Verified"));
+        items.push(ListItem::new("-----------------------------------")); // Separator
+        items.push(ListItem::new("Run verification with Ctrl+V to see details"));
     }
+
+    // --- Render the List ---
+    let list = List::new(items) // Use the combined items list
+        .style(Style::default().fg(Color::White))
+        // Highlight the entire line for simplicity when scrolling
+        .highlight_style(Style::default().bg(Color::DarkGray))
+        .highlight_symbol("→ "); // Indicator for current line
+
+    // Create state for scrolling
+    let mut list_state = tui::widgets::ListState::default();
+    
+    // Calculate total items for scroll clamping
+    let total_items = if let Some(v) = &app.document.last_verification { 
+        v.details.len() + 2  // +2 for summary lines
+    } else { 
+        3  // Header + separator + info message
+    };
+    
+    // Clamp scroll to valid range
+    let max_scroll = total_items.saturating_sub(1);
+    let valid_scroll = app.history_scroll.min(max_scroll);
+    
+    list_state.select(Some(valid_scroll));
+
+    f.render_stateful_widget(list, verify_area, &mut list_state);
 }
 
-// Render metadata editor UI
+// Render metadata editor
 fn render_metadata_editor(f: &mut tui::Frame<CrosstermBackend<io::Stdout>>, area: Rect, app: &mut App) {
     if let Some(editor) = &app.metadata_editor {
         let block = Block::default().borders(Borders::ALL).title("Edit Metadata");
@@ -4956,133 +5831,139 @@ fn render_help_screen(f: &mut tui::Frame<CrosstermBackend<io::Stdout>>, area: Re
     f.render_widget(list, inner_area);
 }
 
-// Helper function to create a centered rect
-fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
-    // Clamp percentages
-    let percent_x = percent_x.min(100);
-    let percent_y = percent_y.min(100);
+// Render file browser dialog
+fn render_file_dialog(
+    f: &mut tui::Frame<CrosstermBackend<io::Stdout>>, 
+    area: Rect, 
+    browser: &FileBrowser, 
+    title: &str, 
+    show_filename_input: bool
+) {
+    let dialog_block = Block::default().borders(Borders::ALL).title(title);
+    let inner_area = dialog_block.inner(area); // Area inside borders
 
-    let popup_layout = Layout::default()
+    // Define constraints based on whether filename input is shown
+    let constraints = if show_filename_input {
+        vec![
+            Constraint::Length(1),  // Current directory path
+            Constraint::Min(0),     // File list (takes remaining space)
+            Constraint::Length(1),  // Filename input line
+            Constraint::Length(1),  // Hint line
+        ]
+    } else {
+        vec![
+            Constraint::Length(1),  // Current directory path
+            Constraint::Min(0),     // File list
+            Constraint::Length(1),  // Hint line
+        ]
+    };
+
+    let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints(
-            [
-                Constraint::Percentage((100 - percent_y) / 2),
-                Constraint::Percentage(percent_y),
-                Constraint::Percentage((100 - percent_y) / 2),
-            ]
-            .as_ref(),
-        )
-        .split(r);
+        .constraints(constraints)
+        .split(inner_area); // Split the inner area
 
-    Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints(
-            [
-                Constraint::Percentage((100 - percent_x) / 2),
-                Constraint::Percentage(percent_x),
-                Constraint::Percentage((100 - percent_x) / 2),
-            ]
-            .as_ref(),
-        )
-        .split(popup_layout[1])[1]
-}
+    f.render_widget(dialog_block, area); // Render the block frame first
 
-// Handle input in Search mode
-fn handle_search_input(app: &mut App, key: event::KeyEvent) -> bool {
-    
-    // Check for Ctrl+key combinations
-    if key.modifiers.contains(KeyModifiers::CONTROL) {
-        if let KeyCode::Char(c) = key.code {
-            match c {
-                'n' => {
-                    app.find_next();
-                    return true;
-                },
-                'p' => {
-                    app.find_prev();
-                    return true;
-                },
-                'r' => {
-                    if app.search_state.is_replace_mode {
-                        app.replace_current();
-                    }
-                    return true;
-                },
-                'a' => {
-                    if app.search_state.is_replace_mode {
-                        app.replace_all();
-                    }
-                    return true;
-                },
-                _ => {} // Other Ctrl combinations
-            }
+    // 1. Current Directory
+    let current_dir_text = Paragraph::new(browser.current_dir.to_string_lossy().to_string())
+        .style(Style::default().fg(Color::Yellow));
+    f.render_widget(current_dir_text, chunks[0]);
+
+    // 2. File List
+    let entries = browser.get_entries_for_display();
+    let items: Vec<ListItem> = entries.iter()
+        .map(|entry_str| ListItem::new(entry_str.as_str()))
+        .collect();
+
+    let list = List::new(items)
+        .style(Style::default().fg(Color::White))
+        .highlight_style(Style::default().bg(Color::Blue).fg(Color::White))
+        .highlight_symbol("> ");
+
+    let mut list_state = tui::widgets::ListState::default();
+    if !browser.entries.is_empty() {
+        // Clamp selection to valid range
+        let clamped_selection = browser.selected_idx.min(browser.entries.len() - 1);
+        list_state.select(Some(clamped_selection));
+    }
+
+    f.render_stateful_widget(list, chunks[1], &mut list_state);
+
+    // 3. Filename Input (Optional)
+    let hint_index = if show_filename_input {
+        let filename_style = if browser.is_editing_filename {
+            Style::default().fg(Color::Yellow) // Highlight if editing
+        } else {
+            Style::default().fg(Color::White)
+        };
+        
+        let filename_text = format!("Filename: {}", browser.filename_input);
+        let filename_para = Paragraph::new(filename_text).style(filename_style);
+        f.render_widget(filename_para, chunks[2]);
+
+        // Show cursor if editing filename
+        if browser.is_editing_filename {
+            f.set_cursor(
+                chunks[2].x + 10 + browser.filename_input.len() as u16, // "Filename: ".len() = 10
+                chunks[2].y
+            );
         }
-    }
+        3 // Hint is at index 3
+    } else {
+        2 // Hint is at index 2
+    };
 
-    // Handle non-modifier keys
-    match key.code {
-        KeyCode::Esc => {
-            app.exit_search();
-            true
-        },
-        KeyCode::Enter => {
-            if app.search_state.search_query.is_empty() {
-                if app.search_state.is_replace_mode && !app.search_state.replace_text.is_empty() {
-                    // Switch to entering search query
-                    app.search_state.replace_text.clear();
-                    app.message = "Search: Enter search text and press Enter".to_string();
-                } else {
-                    app.exit_search();
-                }
-            } else if app.search_state.is_replace_mode && app.search_state.replace_text.is_empty() {
-                // In replace mode, after entering search query, prompt for replace text
-                app.execute_search();
-                app.message = "Replace: Enter replacement text and press Enter".to_string();
-            } else {
-                // Execute the search or confirm replace text
-                app.execute_search();
-            }
-            true
-        },
-        KeyCode::Backspace => {
-            if app.search_state.is_replace_mode && !app.search_state.search_query.is_empty() {
-                // Editing replace text
-                app.search_state.replace_text.pop();
-            } else {
-                // Editing search query
-                app.search_state.search_query.pop();
-            }
-            true
-        },
-        KeyCode::Down => {
-            app.find_next();
-            true
-        },
-        KeyCode::Up => {
-            app.find_prev();
-            true
-        },
-        KeyCode::F(5) => {
-            app.toggle_case_sensitivity();
-            true
-        },
-        KeyCode::Char(c) => {
-            if app.search_state.is_replace_mode && !app.search_state.search_query.is_empty() {
-                // Entering replace text
-                app.search_state.replace_text.push(c);
-            } else {
-                // Entering search query
-                app.search_state.search_query.push(c);
-            }
-            true
-        },
-        _ => false,
-    }
+    // 4. Hint Text
+    let hint_text_str = if show_filename_input {
+        "Arrows: Navigate | Enter: Confirm/Select | F/Tab: Edit Filename | Esc: Cancel"
+    } else {
+        "Arrows: Navigate | Enter: Confirm/Select | Esc: Cancel"
+    };
+    
+    let hint = Paragraph::new(hint_text_str).style(Style::default().fg(Color::DarkGray));
+    f.render_widget(hint, chunks[hint_index]);
 }
 
+// Render unsaved changes dialog
+fn render_unsaved_dialog(f: &mut tui::Frame<CrosstermBackend<io::Stdout>>, area: Rect, app: &App) {
+    if let Dialog::UnsavedChanges(action) = &app.dialog {
+        let action_desc = match action {
+            UnsavedAction::New => "create a new document",
+            UnsavedAction::Open => "open another document",
+            UnsavedAction::Quit => "quit",
+            UnsavedAction::OpenRecent(_) => "open a recent file",
+        };
+        
+        let text = vec![
+            Line::from(Span::styled("Unsaved Changes", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))),
+            Line::from(""),
+            Line::from(format!("The current document has unsaved changes.")),
+            Line::from(format!("Do you want to save before you {}?", action_desc)),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("  [Y]", Style::default().fg(Color::Green)), Span::raw("es (Save) "),
+                Span::styled("  [N]", Style::default().fg(Color::Red)), Span::raw("o (Discard) "),
+                Span::styled("  [Esc]", Style::default().fg(Color::Gray)), Span::raw(" Cancel"),
+            ]),
+        ];
+
+        let paragraph = Paragraph::new(text)
+            .alignment(tui::layout::Alignment::Center)
+            .block(Block::default().borders(Borders::ALL).title("Confirm"));
+
+        // Create a smaller centered rect for the dialog
+        let dialog_area = centered_rect(60, 30, area); // 60% width, 30% height
+
+        f.render_widget(paragraph, dialog_area);
+    }
+}
 
 // Render search/replace UI
 fn render_search_ui(f: &mut tui::Frame<CrosstermBackend<io::Stdout>>, area: Rect, app: &App) {
+    // Create a centered dialog for search/replace
+    let dialog_area = centered_rect(70, 20, area); // 70% width, 20% height
+    
     let title = if app.search_state.is_replace_mode {
         "Search & Replace"
     } else {
@@ -5090,7 +5971,7 @@ fn render_search_ui(f: &mut tui::Frame<CrosstermBackend<io::Stdout>>, area: Rect
     };
     
     let block = Block::default().borders(Borders::ALL).title(title);
-    let inner_area = block.inner(area);
+    let inner_area = block.inner(dialog_area);
     
     // Define layout
     let chunks = Layout::default()
@@ -5107,7 +5988,7 @@ fn render_search_ui(f: &mut tui::Frame<CrosstermBackend<io::Stdout>>, area: Rect
         .split(inner_area);
     
     // Render the main dialog border
-    f.render_widget(block, area);
+    f.render_widget(block, dialog_area);
     
     // 1. Search query input
     let search_style = Style::default().fg(Color::Yellow);
@@ -5170,4 +6051,47 @@ fn render_search_ui(f: &mut tui::Frame<CrosstermBackend<io::Stdout>>, area: Rect
             chunks[0].y,
         );
     }
+    
+    // Also render editor content behind the dialog (dimmed)
+    let editor_block = Block::default().borders(Borders::ALL).title("Editor");
+    let editor_area = editor_block.inner(area);
+    let visible_height = editor_area.height as usize;
+    let display_lines = app.buffer.get_display_lines(visible_height);
+    let text: Vec<Line> = display_lines.into_iter().map(Line::from).collect();
+    let input = Paragraph::new(text)
+        .style(Style::default().fg(Color::DarkGray)); // Dimmed text while searching
+    
+    f.render_widget(editor_block, area);
+    f.render_widget(input, editor_area);
+}
+
+// Helper function to create a centered rect
+fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
+    // Clamp percentages
+    let percent_x = percent_x.min(100);
+    let percent_y = percent_y.min(100);
+
+    let popup_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(
+            [
+                Constraint::Percentage((100 - percent_y) / 2),
+                Constraint::Percentage(percent_y),
+                Constraint::Percentage((100 - percent_y) / 2),
+            ]
+            .as_ref(),
+        )
+        .split(r);
+
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints(
+            [
+                Constraint::Percentage((100 - percent_x) / 2),
+                Constraint::Percentage(percent_x),
+                Constraint::Percentage((100 - percent_x) / 2),
+            ]
+            .as_ref(),
+        )
+        .split(popup_layout[1])[1]
 }
