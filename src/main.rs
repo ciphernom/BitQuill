@@ -1614,6 +1614,19 @@ impl MerkleDocument {
                         });
                     }
                     
+                    // Check if proof uses suspiciously efficient parameters for Wesolowski proof
+                    let l = BigUint::from_bytes_be(&tick.proof.l);
+                    if l.bits() < 120 {
+                        result.valid = false;
+                        result.details.push(VerificationDetail {
+                            description: format!("CRITICAL: VDF tick #{} uses insecure proof parameters",
+                                          tick_num),
+                            valid: false,
+                            block_number: None,
+                            tick_number: Some(tick_num),
+                        });
+                    }
+                    
                     //check for reasonable proof parameter bits
                     let l = BigUint::from_bytes_be(&tick.proof.l);
                     if l.bits() < 120 {
@@ -1670,6 +1683,22 @@ impl MerkleDocument {
                                                 block_number: None,
                                             });
                                         }
+                                        
+                                        // Check if VDF computation speed is suspiciously fast
+                                        if tick.iterations > MIN_VDF_ITERATIONS * 10 {
+                                            // Calculate minimum possible computation time on best known hardware
+                                            let min_possible_time = tick.iterations as f64 / 1_000_000_000.0; // Estimate: 1 billion iterations per second on top hardware
+                                            
+                                            if time_diff.as_secs_f64() < min_possible_time * 0.5 {
+                                                result.valid = false;
+                                                result.details.push(VerificationDetail {
+                                                    description: format!("CRITICAL: VDF computation for tick #{} impossibly fast. Possible RSA factorization attack.", tick_num),
+                                                    valid: false,
+                                                    tick_number: Some(tick_num),
+                                                    block_number: None,
+                                                });
+                                            }
+                                        }                                        
                                     },
                                     Err(_) => {
                                         // Time went backwards
@@ -1733,6 +1762,47 @@ impl MerkleDocument {
                         }
                     }
                     prev_tick = Some(tick);
+                }
+            }
+            
+            // Verify difficulty adjustment algorithm integrity
+            if key_ticks.len() >= 3 {
+                let sample_indices = key_ticks.windows(3).step_by(2).collect::<Vec<_>>();
+                
+                for window in sample_indices {
+                    if window.len() == 3 && window[1] == window[0] + 1 && window[2] == window[1] + 1 {
+                        // We have three consecutive ticks
+                        if let (Some(a), Some(b), Some(c)) = (
+                            self.historical_ticks.get(&window[0]),
+                            self.historical_ticks.get(&window[1]),
+                            self.historical_ticks.get(&window[2])
+                        ) {
+                            // Calculate expected difficulty adjustment based on timestamps
+                            let time_ab = match b.system_time.duration_since(a.system_time) {
+                                Ok(d) => d.as_secs_f64(),
+                                Err(_) => continue, // Skip if time went backwards
+                            };
+                            
+                            // Target is 1 second per tick
+                            let expected_ratio = TARGET_TICK_SECONDS / time_ab;
+                            let expected_difficulty = (b.iterations as f64 * expected_ratio.max(0.25).min(4.0)) as u64;
+                            
+                            // Check if actual difficulty is within reasonable bounds of expected
+                            let tolerance = 0.3; // 30% tolerance
+                            let lower_bound = (expected_difficulty as f64 * (1.0 - tolerance)) as u64;
+                            let upper_bound = (expected_difficulty as f64 * (1.0 + tolerance)) as u64;
+                            
+                            if c.iterations < lower_bound || c.iterations > upper_bound {
+                                result.details.push(VerificationDetail {
+                                    description: format!("SUSPICIOUS: Difficulty adjustment to {} for tick #{} differs from expected range ({}-{})",
+                                                 c.iterations, c.sequence_number, lower_bound, upper_bound),
+                                    valid: true, // Warning only, not critical
+                                    block_number: None,
+                                    tick_number: Some(c.sequence_number),
+                                });
+                            }
+                        }
+                    }
                 }
             }
             
