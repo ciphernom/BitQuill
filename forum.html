@@ -3277,55 +3277,9 @@ function loadUserProfile(username, callback) {
                 loadThreads(forumId);
             });
             
-         /**  // If no forums, create default forums
-            setTimeout(() => {
-                // Modified condition: only create forums if none were found
-                if (!forumsFound && forumsContainer.querySelector('.loading')) {
-                    forumsContainer.innerHTML = ''; // Clear loading message
-                    createDefaultForums();
-                }
-            }, 2000);*/
-        }
-        
-      function createDefaultForums() {
-        // Create multiple forums for different BitQuill topics
-        const defaultForums = [
-            {
-                name: "BitQuill General Discussion",
-                description: "General discussions about BitQuill, human authorship verification, and cryptographic proofs of effort"
-            },
-            {
-                name: "Technical Chat",
-                description: "Discussions about VDFs, Merkle trees, and the technical implementation of BitQuill"
-            },
-            {
-                name: "Use Cases & Applications",
-                description: "Share and discuss real-world applications of BitQuill in various industries"
-            },
-            {
-                name: "Feature Requests",
-                description: "Suggest and discuss new features for the BitQuill platform"
-            },
-            {
-                name: "Help & Support",
-                description: "Get help with using BitQuill and troubleshooting issues"
-            }
-        ];
-        
-        // Add forums one by one
-        defaultForums.forEach(forum => {
-            forums.set({
-                name: forum.name,
-                description: forum.description,
-                createdAt: Date.now()
-            });
-        });
-        
-        // Add a notification
-        showNotification("Default forums created", "success");
-        
 
-    }
+        }
+     
 function resetBitQuillDatabase() {
     if (confirm("WARNING: This will delete ALL forums, threads, and replies. This action cannot be undone. Continue?")) {
         try {
