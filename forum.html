@@ -1609,12 +1609,12 @@
         });
         
         // Main data references
-        const forums = gun.get('forums-bitquill-alpha');
-        const users = gun.get('users-bitquill-alpha');
-        const config = gun.get('config-bitquill-alpha');
-        const flaggedContent = gun.get('flagged-bitquill-alpha');
-        const moderation = gun.get('moderation-bitquill-alpha');
-        const peerList = gun.get('peer-list-bitquill-alpha');
+        const forums = gun.get('forums-bitquill-alpha1');
+        const users = gun.get('users-bitquill-alpha1');
+        const config = gun.get('config-bitquill-alpha1');
+        const flaggedContent = gun.get('flagged-bitquill-alpha1');
+        const moderation = gun.get('moderation-bitquill-alpha1');
+        const peerList = gun.get('peer-list-bitquill-alpha1');
         
         let currentUser = null;
         let userProfile = null;
@@ -3277,14 +3277,14 @@ function loadUserProfile(username, callback) {
                 loadThreads(forumId);
             });
             
-            // If no forums, create default forums
+         /**  // If no forums, create default forums
             setTimeout(() => {
                 // Modified condition: only create forums if none were found
                 if (!forumsFound && forumsContainer.querySelector('.loading')) {
                     forumsContainer.innerHTML = ''; // Clear loading message
                     createDefaultForums();
                 }
-            }, 2000);
+            }, 2000);*/
         }
         
       function createDefaultForums() {
