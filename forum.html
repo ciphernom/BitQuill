@@ -2398,40 +2398,73 @@ class BitQuillMessage {
     }
 
     // Sign the message with SEA
-    async sign(user) {
-        if (!user) throw new Error("User is required for signing");
-        
-        // Create the digest to sign (all critical fields)
-        const digest = JSON.stringify({
-            type: this.type,
-            content: this.content,
-            author: this.author,
-            timestamp: this.timestamp,
-            parentId: this.parentId,
-            metadata: this.metadata,
-            vdfProof: this.vdfProof ? JSON.stringify(this.vdfProof) : null
-        });
-        
+async sign(user) {
+    if (!user) throw new Error("User is required for signing");
+    
+    // Create the digest to sign (all critical fields)
+    const digest = JSON.stringify({
+        type: this.type,
+        content: this.content,
+        author: this.author,
+        timestamp: this.timestamp,
+        parentId: this.parentId,
+        metadata: this.metadata,
+        vdfProof: this.vdfProof ? JSON.stringify(this.vdfProof) : null
+    });
+    
+    try {
         // Use Gun's SEA to create a signature
         this.signature = await SEA.sign(digest, user.pair());
+        
+        // Verify our own signature immediately as a sanity check
+        const verified = await SEA.verify(this.signature, user.is.pub);
+        
+        if (verified !== digest) {
+            console.error("Self-verification of signature failed");
+            console.error("Expected:", digest);
+            console.error("Got:", verified);
+            throw new Error("Signature verification failed");
+        }
+        
+        console.log(`Signature created and verified for ${this.type} by ${this.author}`);
         return this.signature;
+    } catch (error) {
+        console.error("Error signing message:", error);
+        throw error;
     }
+}
 
     // Verify the message's signature
-    async verifySignature(publicKey) {
-        if (!this.signature) return false;
+       async verifySignature(publicKey) {
+        if (!this.signature) {
+            console.error("No signature to verify");
+            return false;
+        }
         
-        const digest = JSON.stringify({
-            type: this.type,
-            content: this.content,
-            author: this.author,
-            timestamp: this.timestamp,
-            parentId: this.parentId,
-            metadata: this.metadata,
-            vdfProof: this.vdfProof ? JSON.stringify(this.vdfProof) : null
-        });
+        if (!publicKey) {
+            console.error("No public key provided for verification");
+            return false;
+        }
         
-        return await SEA.verify(this.signature, publicKey);
+        try {
+            // Construct the exact same digest that was used for signing
+            const digest = JSON.stringify({
+                type: this.type,
+                content: this.content,
+                author: this.author,
+                timestamp: this.timestamp,
+                parentId: this.parentId,
+                metadata: this.metadata,
+                vdfProof: this.vdfProof ? JSON.stringify(this.vdfProof) : null
+            });
+            
+            // Use Gun's SEA to verify the signature
+            const verified = await SEA.verify(this.signature, publicKey);
+            return verified === digest; // Must match exactly
+        } catch (error) {
+            console.error("Error during signature verification:", error);
+            return false;
+        }
     }
 
     // Verify the VDF proof
@@ -2709,21 +2742,68 @@ BitQuillMessage.prototype.addPeerVerification = async function(peerPublicKey, pe
         throw new Error("Message must have an ID to be verified");
     }
     
-    console.log(`Adding peer verification for ${this.id} from ${peerPublicKey} with role ${peerRole}`);
-    
     // 1. Verify the VDF proof
-    const vdfVerified = await this.verifyProof();
+    let vdfVerified = false;
+    try {
+        if (this.vdfProof) {
+            const input = this.generateVdfInput();
+            vdfVerified = await bitQuillVDF.verifyVDFProofWithIntegrity(
+                input, 
+                this.vdfProof,
+                this.vdfProof.iterations
+            );
+        }
+    } catch (error) {
+        console.error("VDF verification error:", error);
+        vdfVerified = false;
+    }
     
-    // 2. Verify signature
-    const signatureVerified = await this.verifySignature(this.author);
+    // 2. Verify signature using author's public key
+    let signatureVerified = false;
+    try {
+        if (this.signature) {
+            // Get author's public key from Gun user space
+            const authorPublicKey = await new Promise(resolve => {
+                gun.user(this.author).get('pub').once(pub => {
+                    resolve(pub);
+                });
+                // Set a timeout to prevent hanging
+                setTimeout(() => resolve(null), 3000);
+            });
+            
+            if (authorPublicKey) {
+                // Create the digest that should match what was signed
+                const digest = JSON.stringify({
+                    type: this.type,
+                    content: this.content,
+                    author: this.author,
+                    timestamp: this.timestamp,
+                    parentId: this.parentId,
+                    metadata: this.metadata,
+                    vdfProof: this.vdfProof ? JSON.stringify(this.vdfProof) : null
+                });
+                
+                // Verify using SEA
+                signatureVerified = await SEA.verify(this.signature, authorPublicKey);
+            }
+        }
+    } catch (error) {
+        console.error("Signature verification error:", error);
+        signatureVerified = false;
+    }
     
     // 3. Check content moderation
-    const isInappropriate = await checkContent(this.content);
+    let isInappropriate = false;
+    try {
+        isInappropriate = await checkContent(this.content);
+    } catch (error) {
+        console.error("Content moderation check error:", error);
+        isInappropriate = true; // Fail safe - treat as inappropriate if check fails
+    }
     
-    // Log verification status
     console.log(`Verification results - VDF: ${vdfVerified}, Signature: ${signatureVerified}, Appropriate: ${!isInappropriate}`);
     
-    // FIX: Get the appropriate signing pair
+    // Get the appropriate signing pair
     let signingPair;
     if (currentUser && currentUser.is.pub === peerPublicKey) {
         signingPair = currentUser.pair();
@@ -2746,7 +2826,6 @@ BitQuillMessage.prototype.addPeerVerification = async function(peerPublicKey, pe
         
         // Add to verification status
         const verificationRef = gun.get(`verification-status`).get(this.id);
-        // FIX: Use peerPublicKey consistently
         verificationRef.get('verifications').get(peerPublicKey).put(verification);
         
         // Update status based on all verifications
@@ -2754,11 +2833,9 @@ BitQuillMessage.prototype.addPeerVerification = async function(peerPublicKey, pe
             if (!statusData) return;
             
             const status = VerificationStatus.fromPayload(statusData);
-            // FIX: Use peerPublicKey consistently
             status.addVerification(peerPublicKey, verification);
             verificationRef.put(status.toPayload());
             
-            // Log current status after update
             console.log(`Updated verification status: ${status.status} (${status.getVerificationScore()}/${status.requiredVerifications})`);
         });
         
@@ -2783,7 +2860,6 @@ BitQuillMessage.prototype.addPeerVerification = async function(peerPublicKey, pe
         
         // Add to verification status
         const verificationRef = gun.get(`verification-status`).get(this.id);
-        // FIX: Use peerPublicKey consistently
         verificationRef.get('rejections').get(peerPublicKey).put(rejection);
         
         // Update status based on all rejections
@@ -2791,7 +2867,6 @@ BitQuillMessage.prototype.addPeerVerification = async function(peerPublicKey, pe
             if (!statusData) return;
             
             const status = VerificationStatus.fromPayload(statusData);
-            // FIX: Use peerPublicKey consistently
             status.addRejection(peerPublicKey, rejection);
             verificationRef.put(status.toPayload());
         });
@@ -10528,25 +10603,35 @@ async function verifyReceivedContent(content, author, vdfProof, proofDifficulty)
         return true;
     }
     
-    // Add type checking for vdfProof
-    const safeVdfProof = typeof vdfProof === 'string' ? vdfProof : 
-                         (vdfProof ? JSON.stringify(vdfProof) : '');
+    // Parse vdfProof if it's a string
+    let parsedProof = vdfProof;
+    if (typeof vdfProof === 'string') {
+        try {
+            parsedProof = JSON.parse(vdfProof);
+        } catch (e) {
+            console.error("Error parsing VDF proof string:", e);
+            return false;
+        }
+    }
     
-    // Create a cache key using a hash of the content, author and proof
-    const cacheKey = await createSHA256Hash(`${content}-${author}-${safeVdfProof}`);
-   
+    // Create a cache key using a hash of the content and author
+    const cacheKey = await createSHA256Hash(`${content}-${author}`);
     
     // Check cache first
     if (verificationCache.has(cacheKey)) {
         return verificationCache.get(cacheKey);
     }
     
-    // 1. First verify the VDF proof
+    // 1. Verify the VDF proof
     let proofValid = false;
-    if (vdfProof) {
+    if (parsedProof) {
         try {
-             const proofValid = await bitQuillVDF.verifyVDFProofWithIntegrity(
-                input, proof, difficulty
+            // Recreate input based on content and author
+            const input = author + content.substring(0, 100);
+            proofValid = await bitQuillVDF.verifyVDFProofWithIntegrity(
+                input, 
+                parsedProof, 
+                proofDifficulty || bitQuillVDF.INITIAL_ITERATIONS
             );
         } catch (error) {
             console.error("Error verifying VDF proof:", error);
@@ -10554,11 +10639,11 @@ async function verifyReceivedContent(content, author, vdfProof, proofDifficulty)
         }
     }
     
-    // 2. Then verify content with toxicity model
+    // 2. Check content with toxicity model
     const isInappropriate = await checkContent(content);
     
-    // Store verification results with the content for future reference
-    gun.get(`content-verification`).get(content).put({
+    // Store verification results
+    gun.get(`content-verification`).get(createSHA256Hash(content)).put({
         author,
         proofValid,
         isInappropriate,
@@ -10566,10 +10651,10 @@ async function verifyReceivedContent(content, author, vdfProof, proofDifficulty)
         verifiedAt: Date.now()
     });
     
-    // Return false if the content is inappropriate or doesn't have a valid proof
-    let result = !isInappropriate && proofValid;
+    // Return result (true if content is appropriate and proof is valid)
+    const result = !isInappropriate && proofValid;
     verificationCache.set(cacheKey, result);
-
+    
     return result;
 }
 
