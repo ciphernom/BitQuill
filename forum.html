@@ -1777,36 +1777,46 @@ let currentUserPassword = null;
               pi: this.bigIntToBytes(pi),
               l: this.bigIntToBytes(l),
               r: this.bigIntToBytes(r),
-              iterations: iterations
+              iterations: iterations,
+              inputHash: await this.hashInput(input) // Store hash of input for verification
             };
           }
 
 
 
 
-         async verifyVDFProof(input, proof) {
-            // Check for missing or invalid proof components
-            if (!proof || !proof.y || !proof.pi || !proof.l || !proof.r) {
-                console.warn("Invalid or incomplete VDF proof");
-                return false;
-            }
-            // Hash the input to get starting value x
-            const hashBytes = await this.hashInput(input);
-            const x = this.bytesToBigInt(hashBytes);
-            
-            // Parse y, π, l, r from the proof
-            const y = this.bytesToBigInt(proof.y);
-            const pi = this.bytesToBigInt(proof.pi);
-            const l = this.bytesToBigInt(proof.l);
-            const r = this.bytesToBigInt(proof.r);
-            
-            // Verify: y == pi^l * x^r mod N
-            const pi_l = this.modPow(pi, l, this.modulus);
-            const x_r = this.modPow(x, r, this.modulus);
-            const right_side = (pi_l * x_r) % this.modulus;
-            
-            return y === right_side;
+        async verifyVDFProof(input, proof) {
+          // Check for missing or invalid proof components
+          if (!proof || !proof.y || !proof.pi || !proof.l || !proof.r) {
+            console.warn("Invalid or incomplete VDF proof");
+            return false;
           }
+          
+          // IMPORTANT: Use stored input hash if available for consistency
+          let x;
+          if (proof.inputHash) {
+            x = this.bytesToBigInt(proof.inputHash);
+            console.log("Using stored input hash for verification");
+          } else {
+            // Fall back to hashing the provided input
+            const hashBytes = await this.hashInput(input);
+            x = this.bytesToBigInt(hashBytes);
+            console.log("No stored input hash, using provided input");
+          }
+          
+          // Parse y, π, l, r from the proof
+          const y = this.bytesToBigInt(proof.y);
+          const pi = this.bytesToBigInt(proof.pi);
+          const l = this.bytesToBigInt(proof.l);
+          const r = this.bytesToBigInt(proof.r);
+          
+          // Verify: y == pi^l * x^r mod N
+          const pi_l = this.modPow(pi, l, this.modulus);
+          const x_r = this.modPow(x, r, this.modulus);
+          const right_side = (pi_l * x_r) % this.modulus;
+          
+          return y === right_side;
+        }
 
           // Efficient modular exponentiation (x^e mod m)
           modPow(x, e, m) {
@@ -1880,34 +1890,45 @@ let currentUserPassword = null;
           }
           
           // Verify a proof with additional integrity checks
-          async verifyVDFProofWithIntegrity(input, proof, expectedIterations) {
-            // Check system integrity first
-            if (!this.verifySystemIntegrity()) {
-              return false;
-            }
-            
-            // First check that proof has all expected components
-            if (!proof || !proof.y || !proof.pi || !proof.l || !proof.r || !proof.iterations) {
-              console.error("Invalid VDF proof structure");
-              return false;
-            }
-            
-            // Verify iterations match what we expect
-            if (proof.iterations < this.MIN_ITERATIONS || 
-                proof.iterations > this.MAX_ITERATIONS ||
-                (expectedIterations && proof.iterations !== expectedIterations)) {
-              console.error("VDF proof iterations mismatch");
-              return false;
-            }
-            
-            try {
-              // Now perform the cryptographic verification
-              return await this.verifyVDFProof(input, proof);
-            } catch (error) {
-              console.error("Error during VDF proof verification:", error);
-              return false;
-            }
+        async verifyVDFProofWithIntegrity(input, proof, expectedIterations) {
+          // Check system integrity first
+          if (!this.verifySystemIntegrity()) {
+            return false;
           }
+          
+          // First check that proof has all expected components
+          if (!proof || !proof.y || !proof.pi || !proof.l || !proof.r || !proof.iterations) {
+            console.error("Invalid VDF proof structure");
+            return false;
+          }
+          
+          // Verify iterations match what we expect
+          if (proof.iterations < this.MIN_ITERATIONS || 
+              proof.iterations > this.MAX_ITERATIONS ||
+              (expectedIterations && proof.iterations !== expectedIterations)) {
+            console.error("VDF proof iterations mismatch");
+            return false;
+          }
+          
+          try {
+            // CRITICAL FIX: Use stored original input if available
+            const verificationInput = proof.originalInput || input;
+            
+            // Add debugging logs to help diagnose verification issues
+            console.log("VDF Integrity Verification:");
+            console.log("- Input provided:", input ? input.substring(0, 30) + "..." : "MISSING");
+            console.log("- Using input:", verificationInput.substring(0, 30) + "...");
+            console.log("- Has originalInput:", proof.originalInput ? "YES" : "NO");
+            
+            // Now perform the cryptographic verification
+            const result = await this.verifyVDFProof(verificationInput, proof);
+            console.log("VDF verification result:", result);
+            return result;
+          } catch (error) {
+            console.error("Error during VDF proof verification:", error);
+            return false;
+          }
+        }
   
           // Calculate appropriate difficulty based on reputation
           getDifficultyForReputation(reputation) {
@@ -1963,10 +1984,10 @@ let currentUserPassword = null;
                 reject(error);
               }
             });
-          }
-          
-          
+          }                  
         }
+        
+        
         // Create a size-limited, LRU cache for verifications
 class LRUCache {
   constructor(maxSize = 500) {
@@ -2383,18 +2404,25 @@ class BitQuillMessage {
 
     // Generate VDF proof with the proper input
     async generateProof(difficulty) {
-        const input = this.generateVdfInput();
-        
-        // Use the existing VDF system with proper UI feedback
-        this.vdfProof = await generateVDFProof({
-            input: input,
-            difficulty: difficulty,
-            purpose: this.type,
-            entity: this.type,
-            contentPreview: this.content.substring(0, 100)
-        });
-        
-        return this.vdfProof;
+      const input = this.generateVdfInput();
+      console.log("Generated input for VDF proof:", input.substring(0, 50) + "...");
+      
+      // Use the existing VDF system with proper UI feedback
+      this.vdfProof = await generateVDFProof({
+        input: input,
+        difficulty: difficulty,
+        purpose: this.type,
+        entity: this.type,
+        contentPreview: this.content.substring(0, 100)
+      });
+      
+      // CRITICAL: Store the original input with the proof
+      this.vdfProof.originalInput = input;
+      this.vdfProof.messageType = this.type;
+      
+      console.log("VDF proof generated with stored input");
+      
+      return this.vdfProof;
     }
 
     // Sign the message with SEA
@@ -2469,14 +2497,22 @@ async sign(user) {
 
     // Verify the VDF proof
     async verifyProof() {
-        if (!this.vdfProof) return false;
-        
-        const input = this.generateVdfInput();
-        return await bitQuillVDF.verifyVDFProofWithIntegrity(
-            input, 
-            this.vdfProof,
-            this.vdfProof.iterations
-        );
+      if (!this.vdfProof) return false;
+      
+      // Use stored original input if available, else regenerate
+      const input = this.vdfProof.originalInput || this.generateVdfInput();
+      
+      if (!this.vdfProof.originalInput) {
+        console.log("No stored input found, using regenerated input");
+      } else {
+        console.log("Using stored original input for verification");
+      }
+      
+      return await bitQuillVDF.verifyVDFProofWithIntegrity(
+        input, 
+        this.vdfProof,
+        this.vdfProof.iterations
+      );
     }
 
     // Full verification of the message (proof + signature)
@@ -2649,6 +2685,27 @@ async sign(user) {
             }
         }
         
+         let parsedVdfProof = null;
+        if (payload.vdfProof) {
+          try {
+            if (typeof payload.vdfProof === 'string') {
+              parsedVdfProof = JSON.parse(payload.vdfProof);
+            } else {
+              parsedVdfProof = payload.vdfProof;
+            }
+            
+            // Ensure messageType is transferred if available
+            if (payload.messageType && !parsedVdfProof.messageType) {
+              parsedVdfProof.messageType = payload.messageType;
+            }
+            
+            console.log("Successfully parsed VDF proof from payload");
+          } catch (e) {
+            console.error("Error parsing VDF proof:", e);
+            parsedVdfProof = payload.vdfProof; // Use as-is if parsing fails
+          }
+        }       
+        
         // Select the appropriate class based on message type
         switch (type) {
             case 'thread':
@@ -2678,15 +2735,15 @@ async sign(user) {
         
         // Create a new instance of the appropriate class with all the payload data
         return new messageClass({
-            type: payload.type,
-            content: payload.content,
-            author: payload.author,
-            timestamp: payload.timestamp || payload.createdAt,
-            parentId: payload.parentId,
-            metadata: metadata,
-            vdfProof: payload.vdfProof ? (typeof payload.vdfProof === 'string' ? JSON.parse(payload.vdfProof) : payload.vdfProof) : null,
-            signature: payload.signature,
-            id: payload._id || payload.id || null
+          type: payload.type,
+          content: payload.content,
+          author: payload.author,
+          timestamp: payload.timestamp || payload.createdAt,
+          parentId: payload.parentId,
+          metadata: metadata,
+          vdfProof: parsedVdfProof,
+          signature: payload.signature,
+          id: payload._id || payload.id || null
         });
     }
 }
@@ -5177,28 +5234,38 @@ class ModActionMessage extends BitQuillMessage {
     
     // Override toPayload to handle mod-action-specific properties
     toPayload() {
-        const payload = super.toPayload();
+      const payload = super.toPayload();
+      
+      // Add backward compatibility fields
+      payload.actionType = this.metadata.actionType;
+      payload.targetType = this.metadata.targetType;
+      payload.targetId = this.metadata.targetId;
+      payload.targetAuthor = this.metadata.targetAuthor;
+      payload.reason = this.metadata.reason;
+      payload.moderator = this.author;
+      payload.actionTime = this.timestamp;
+      
+      // Handle itemSnapshot specially - this could contain nested arrays
+      if (this.metadata.itemSnapshot) {
+        payload.itemSnapshot = JSON.stringify(this.metadata.itemSnapshot);
         
-        // Add backward compatibility fields
-        payload.actionType = this.metadata.actionType;
-        payload.targetType = this.metadata.targetType;
-        payload.targetId = this.metadata.targetId;
-        payload.targetAuthor = this.metadata.targetAuthor;
-        payload.reason = this.metadata.reason;
-        payload.moderator = this.author;
-        payload.actionTime = this.timestamp;
-        
-        // Handle itemSnapshot specially - this could contain nested arrays
-        if (this.metadata.itemSnapshot) {
-            payload.itemSnapshot = JSON.stringify(this.metadata.itemSnapshot);
-            
-            // Remove from metadata to avoid duplication
-            const cleanMetadata = {...this.metadata};
-            delete cleanMetadata.itemSnapshot;
-            payload.metadata = cleanMetadata;
+        // Remove from metadata to avoid duplication
+        const cleanMetadata = {...this.metadata};
+        delete cleanMetadata.itemSnapshot;
+        payload.metadata = cleanMetadata;
+      }
+      
+      // CRITICAL: Ensure VDF proof gets serialized with originalInput
+      if (this.vdfProof) {
+        // Make sure we include the originalInput in the stringified proof
+        if (typeof this.vdfProof === 'object') {
+          payload.vdfProof = JSON.stringify(this.vdfProof);
         }
-        
-        return payload;
+        // Also store message type for reconstruction during verification
+        payload.messageType = this.type;
+      }
+      
+      return payload;
     }
     
     // Apply moderation action
@@ -7067,19 +7134,22 @@ async function generateVDFProof(options) {
     // Set bitQuillVDF progress callback
     bitQuillVDF.setProgressCallback(updateProgress);
     
-    try {
-        // Verify VDF system integrity first
-        if (!bitQuillVDF.verifySystemIntegrity()) {
+        try {
+          // Verify VDF system integrity first
+          if (!bitQuillVDF.verifySystemIntegrity()) {
             throw new Error("VDF system integrity check failed");
-        }
-        
-        // Generate VDF proof with timeout protection
-        const proof = await bitQuillVDF.computeVDFProofWithTimeout(input, difficulty, timeoutMs);
-        
-        // Verify the proof after generation as a double-check
-        const isProofValid = await bitQuillVDF.verifyVDFProofWithIntegrity(
+          }
+          
+          // Generate VDF proof with timeout protection
+          const proof = await bitQuillVDF.computeVDFProofWithTimeout(input, difficulty, timeoutMs);
+          
+          // Store the original input explicitly in the proof object for verification
+          proof.originalInput = input;
+          
+          // Verify the proof after generation as a double-check
+          const isProofValid = await bitQuillVDF.verifyVDFProofWithIntegrity(
             input, proof, difficulty
-        );
+          );
         
         if (!isProofValid) {
             throw new Error("Generated proof failed verification");
@@ -10540,7 +10610,13 @@ async function checkApprovalThreshold(username) {
         // Check if we have enough approvals
         if (approvalsCount >= requiredApprovals) {
             console.log(`Approval threshold met for ${username}, updating status...`);
-            
+              // Log the admin request's VDF proof for debugging
+              if (adminRequest.vdfProof) {
+                console.log("Admin request has VDF proof:", 
+                  adminRequest.vdfProof.originalInput ? "with originalInput" : "without originalInput");
+              } else {
+                console.log("Admin request has no VDF proof");
+              }
             // Update status
             adminRequest.status = 'approved';
             await adminRequests.get(username).get('status').put('approved');
@@ -10625,18 +10701,61 @@ async function verifyReceivedContent(content, author, vdfProof, proofDifficulty)
     // 1. Verify the VDF proof
     let proofValid = false;
     if (parsedProof) {
-        try {
-            // Recreate input based on content and author
-            const input = author + content.substring(0, 100);
-            proofValid = await bitQuillVDF.verifyVDFProofWithIntegrity(
-                input, 
-                parsedProof, 
-                proofDifficulty || bitQuillVDF.INITIAL_ITERATIONS
-            );
-        } catch (error) {
-            console.error("Error verifying VDF proof:", error);
-            proofValid = false;
+      try {
+        let input;
+        
+        // Check if the proof has stored original input
+        if (parsedProof.originalInput) {
+          input = parsedProof.originalInput;
+          console.log("Using stored original input for verification");
+        } else {
+          // Attempt to recreate message and generate input
+          console.log("No stored input found, recreating from message properties");
+          
+          // Determine message type based on context (if available)
+          const msgType = parsedProof.messageType || 
+                         (typeof threadData !== 'undefined' ? 'thread' : 'reply');
+          
+          // Create appropriate message object
+          let msg;
+          if (msgType === 'thread') {
+            msg = new ThreadMessage({
+              content: content,
+              author: author,
+              timestamp: threadData?.timestamp || Date.now(),
+              parentId: threadData?.parentId || threadData?.forumId || ''
+            });
+            if (threadData?.title) msg.title = threadData.title;
+          } else {
+            msg = new ReplyMessage({
+              content: content,
+              author: author,
+              timestamp: replyData?.timestamp || Date.now(),
+              parentId: replyData?.parentId || threadId || ''
+            });
+            if (replyData?.parentReplyId) msg.parentReplyId = replyData.parentReplyId;
+            if (replyData?.depth) msg.depth = replyData.depth;
+          }
+          
+          // Generate VDF input using the message's method
+          input = msg.generateVdfInput();
+          console.log("Recreated input for verification:", input.substring(0, 50) + "...");
         }
+        
+        // Verify using reconstructed or stored input
+        proofValid = await bitQuillVDF.verifyVDFProofWithIntegrity(
+          input,
+          parsedProof,
+          proofDifficulty || bitQuillVDF.INITIAL_ITERATIONS
+        );
+        
+        if (!proofValid) {
+          console.error("VDF verification failed with reconstructed input");
+        }
+      } catch (error) {
+        console.error("Error verifying VDF proof:", error);
+        proofValid = false;
+      }
     }
     
     // 2. Check content with toxicity model
