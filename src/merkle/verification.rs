@@ -1,23 +1,12 @@
 use crate::constants::*;
-use crate::error::{BitQuillError, BitQuillResult};
 use crate::utils;
-use crate::vdf::{VDF, VDFProof, VDFClockTick, compute_vdf_proof};
-use crate::merkle::hash::{calculate_leaf_hash, calculate_node_hash, get_element_hash};
+use crate::vdf::VDFClockTick;
+use crate::merkle::hash::calculate_leaf_hash;
 use crate::merkle::types::*;
-use crate::merkle::analysis::*;
 
 use num_bigint::BigUint;
 use sha2::{Digest, Sha256};
-use std::{
-    collections::{HashMap, VecDeque},
-    fs,
-    path::PathBuf,
-    sync::{mpsc, Arc, Mutex},
-    thread,
-    time::{Duration, Instant, SystemTime},
-};
-use serde::{Serialize, Deserialize};
-use chrono::{DateTime, Local};
+use std::time::Instant;
 use hex;
 
 impl MerkleDocument {

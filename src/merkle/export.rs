@@ -1,8 +1,8 @@
 use crate::constants::*;
 use crate::error::{BitQuillError, BitQuillResult};
 use crate::merkle::types::*;
-use crate::vdf::{VDF, VDFClockTick}; // Added VDFClockTick
-use sha2::{Digest, Sha256}; // Add Digest for the sha256::digest function
+use crate::vdf::VDFClockTick; // Added VDFClockTick
+use sha2::Digest; // Add Digest for the sha256::digest function
 
 use std::{
     fs,

@@ -1,21 +1,13 @@
 use crate::constants::*;
-use crate::error::{BitQuillError, BitQuillResult};
-use crate::utils;
-use crate::vdf::{VDF, VDFProof, VDFClockTick, compute_vdf_proof};
+use crate::vdf::{VDF, VDFClockTick};
 
-use num_bigint::BigUint;
-use sha2::{Digest, Sha256};
 use std::{
     collections::{HashMap, VecDeque},
-    fs,
-    path::PathBuf,
     sync::{mpsc, Arc, Mutex},
     thread,
     time::{Duration, Instant, SystemTime},
 };
 use serde::{Serialize, Deserialize};
-use chrono::{DateTime, Local};
-use hex;
 
 // Document state representing the content at a specific point
 #[derive(Clone, Debug, Serialize, Deserialize)]

@@ -1,4 +1,4 @@
-use crate::merkle::types::{MerkleLeaf, MerkleTreeElement, MerkleNode};
+use crate::merkle::types::{MerkleLeaf, MerkleTreeElement};
 use crate::error::{BitQuillError, BitQuillResult};
 use sha2::{Digest, Sha256};
 use std::time::SystemTime;

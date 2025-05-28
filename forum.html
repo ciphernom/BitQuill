@@ -1665,21 +1665,32 @@ let currentUserPassword = null;
           }
 
             // Convert bytes to BigInt
-            bytesToBigInt(bytes) {
-                // Check for empty or null bytes array
-                if (!bytes || bytes.length === 0) {
-                    return BigInt(0); // Return 0 for empty arrays
-                }
-                
-                let hex = Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
-                
-                // Additional check for empty hex string
-                if (hex === '') {
-                    return BigInt(0);
-                }
-                
-                return BigInt("0x" + hex);
+         bytesToBigInt(bytes) {
+            // Check for empty or null bytes array
+            if (!bytes || bytes.length === 0) {
+                console.warn("bytesToBigInt: Empty bytes array, returning 0");
+                return BigInt(0);
             }
+            
+            // Convert Uint8Array to hex string
+            let hex = '';
+            for (let i = 0; i < bytes.length; i++) {
+                hex += bytes[i].toString(16).padStart(2, '0');
+            }
+            
+            // Additional check for empty hex string
+            if (hex === '') {
+                console.warn("bytesToBigInt: Empty hex string, returning 0");
+                return BigInt(0);
+            }
+            
+            try {
+                return BigInt("0x" + hex);
+            } catch (error) {
+                console.error("bytesToBigInt: Error converting hex to BigInt:", error);
+                return BigInt(0);
+            }
+        }
 
           // Convert BigInt to bytes
           bigIntToBytes(bigint) {
@@ -1690,6 +1701,23 @@ let currentUserPassword = null;
             let bytes = new Uint8Array(hex.length / 2);
             for (let i = 0; i < hex.length; i += 2) {
               bytes[i/2] = parseInt(hex.substr(i, 2), 16);
+            }
+            return bytes;
+          }
+
+
+        // **New Helper Method: Convert Uint8Array to base64 string**
+          arrayBufferToBase64(buffer) {
+            const binary = String.fromCharCode(...buffer);
+            return btoa(binary);
+          }
+
+          // **New Helper Method: Convert base64 string to Uint8Array**
+          base64ToArrayBuffer(base64) {
+            const binary = atob(base64);
+            const bytes = new Uint8Array(binary.length);
+            for (let i = 0; i < binary.length; i++) {
+              bytes[i] = binary.charCodeAt(i);
             }
             return bytes;
           }
@@ -1723,6 +1751,8 @@ let currentUserPassword = null;
             const hashBytes = await this.hashInput(input);
             let x = this.bytesToBigInt(hashBytes);
             
+            console.log("Computing VDF proof, hashed x:", x.toString(16).substring(0, 20) + "...");
+            
             // Generate prime l for proof - use one of our generated primes
             const l = this.getRandomPrime();
             
@@ -1730,93 +1760,96 @@ let currentUserPassword = null;
             const r = this.modPow(BigInt(2), BigInt(iterations), l);
             
             // Calculate y = x^(2^t) mod N (sequential squaring)
-            // This is the time-consuming part that creates the "delay"
             let y = x;
             
             // For UI feedback, we'll use a chunked approach
             const updateCallback = this.onProgressUpdate;
-            const chunkSize = 100; // Update progress every 100 iterations
+            const chunkSize = 100;
             
             for (let i = 0; i < iterations; i++) {
-              // Square and mod
-              y = (y * y) % this.modulus;
-              
-              // Update progress every chunkSize iterations
-              if (updateCallback && i % chunkSize === 0) {
-                const progress = (i / iterations) * 100;
-                await new Promise(resolve => {
-                  updateCallback(progress);
-                  setTimeout(resolve, 0); // Let UI refresh
-                });
-              }
+                // Square and mod
+                y = (y * y) % this.modulus;
+                
+                // Update progress every chunkSize iterations
+                if (updateCallback && i % chunkSize === 0) {
+                    const progress = (i / iterations) * 100;
+                    await new Promise(resolve => {
+                        updateCallback(progress);
+                        setTimeout(resolve, 0);
+                    });
+                }
             }
             
-            // Calculate a simplified q for browser implementation
-            // Note: For production systems, would need more careful calculation
-            // In a simplified browser implementation, we use a different approach
-            // than in the Rust code
-            
-            // We'll use a simple approximation formula that works in JS
-            // This is mathematically different but achieves similar security goals
+            // Calculate proof components
             const twoToPower = this.modPow(BigInt(2), BigInt(iterations), this.modulus);
-           
-
-            // Then use:
             const lInverse = this.modInverse(l, this.modulus);
+            
             if (lInverse === null) {
-              // Generate a new prime if not invertible
-              return this.computeVDFProof(input, iterations);
+                // Generate a new prime if not invertible
+                return this.computeVDFProof(input, iterations);
             }
+            
             const q = (twoToPower - r) * lInverse % this.modulus;
             
             // Calculate proof π = x^q mod N
             const pi = this.modPow(x, q, this.modulus);
+                        
+            const proof = {
+                  y: this.arrayBufferToBase64(this.bigIntToBytes(y)),
+                  pi: this.arrayBufferToBase64(this.bigIntToBytes(pi)),
+                  l: this.arrayBufferToBase64(this.bigIntToBytes(l)),
+                  r: this.arrayBufferToBase64(this.bigIntToBytes(r)),
+                  iterations: iterations
+                };
+                console.log("Generated proof:", {
+                  y: proof.y.length > 0 ? "base64 string" : "EMPTY",
+                  pi: proof.pi.length > 0 ? "base64 string" : "EMPTY",
+                  l: proof.l.length > 0 ? "base64 string" : "EMPTY",
+                  r: proof.r.length > 0 ? "base64 string" : "EMPTY"
+                });
+                return proof;
+            }
+
+
+
+
+            async verifyVDFProof(input, proof) {
+                // Check for missing or invalid proof components
+                if (!proof || !proof.y || !proof.pi || !proof.l || !proof.r) {
+                    console.warn("Invalid or incomplete VDF proof");
+                    return false;
+                }
+                    if (proof.y.length === 0) console.error("Proof y is empty");
+                    if (proof.pi.length === 0) console.error("Proof pi is empty");
+                    if (proof.l.length === 0) console.error("Proof l is empty");
+                    if (proof.r.length === 0) console.error("Proof r is empty");
+                    
+                // Always hash the input for verification
+                const hashBytes = await this.hashInput(input);
+                const x = this.bytesToBigInt(hashBytes);
+                
+                console.log("Hashed input for verification, x:", x.toString(16).substring(0, 20) + "...");
+                
+                // Parse y, π, l, r from the proof
+                const y = this.bytesToBigInt(this.base64ToArrayBuffer(proof.y));
+                const pi = this.bytesToBigInt(this.base64ToArrayBuffer(proof.pi));
+                const l = this.bytesToBigInt(this.base64ToArrayBuffer(proof.l));
+                const r = this.bytesToBigInt(this.base64ToArrayBuffer(proof.r));
+                
+                // Verify: y == pi^l * x^r mod N
+                const pi_l = this.modPow(pi, l, this.modulus);
+                const x_r = this.modPow(x, r, this.modulus);
+                const right_side = (pi_l * x_r) % this.modulus;
+                
+                return y === right_side;
+            }
             
-            return {
-              y: this.bigIntToBytes(y),
-              pi: this.bigIntToBytes(pi),
-              l: this.bigIntToBytes(l),
-              r: this.bigIntToBytes(r),
-              iterations: iterations,
-              inputHash: await this.hashInput(input) // Store hash of input for verification
-            };
-          }
+            
+            
+         
 
 
 
-
-        async verifyVDFProof(input, proof) {
-          // Check for missing or invalid proof components
-          if (!proof || !proof.y || !proof.pi || !proof.l || !proof.r) {
-            console.warn("Invalid or incomplete VDF proof");
-            return false;
-          }
-          
-          // IMPORTANT: Use stored input hash if available for consistency
-          let x;
-          if (proof.inputHash) {
-            x = this.bytesToBigInt(proof.inputHash);
-            console.log("Using stored input hash for verification");
-          } else {
-            // Fall back to hashing the provided input
-            const hashBytes = await this.hashInput(input);
-            x = this.bytesToBigInt(hashBytes);
-            console.log("No stored input hash, using provided input");
-          }
-          
-          // Parse y, π, l, r from the proof
-          const y = this.bytesToBigInt(proof.y);
-          const pi = this.bytesToBigInt(proof.pi);
-          const l = this.bytesToBigInt(proof.l);
-          const r = this.bytesToBigInt(proof.r);
-          
-          // Verify: y == pi^l * x^r mod N
-          const pi_l = this.modPow(pi, l, this.modulus);
-          const x_r = this.modPow(x, r, this.modulus);
-          const right_side = (pi_l * x_r) % this.modulus;
-          
-          return y === right_side;
-        }
 
           // Efficient modular exponentiation (x^e mod m)
           modPow(x, e, m) {
@@ -2027,7 +2060,15 @@ class LRUCache {
   }
 }
         
-        
+        // Add this near the top with other utility functions
+        async function createSHA256Hash(text) {
+            const encoder = new TextEncoder();
+            const data = encoder.encode(text);
+            const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+            const hashArray = Array.from(new Uint8Array(hashBuffer));
+            return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+        }
+
         const verificationCache = new LRUCache(500);
 
 
@@ -2425,7 +2466,7 @@ class BitQuillMessage {
       return this.vdfProof;
     }
 
-    // Sign the message with SEA
+// Sign the message with SEA
 async sign(user) {
     if (!user) throw new Error("User is required for signing");
     
@@ -2439,19 +2480,44 @@ async sign(user) {
         metadata: this.metadata,
         vdfProof: this.vdfProof ? JSON.stringify(this.vdfProof) : null
     });
-    
+
     try {
-        // Use Gun's SEA to create a signature
+        // Sign the digest
         this.signature = await SEA.sign(digest, user.pair());
         
-        // Verify our own signature immediately as a sanity check
+        // Verify the signature immediately
         const verified = await SEA.verify(this.signature, user.is.pub);
         
-        if (verified !== digest) {
-            console.error("Self-verification of signature failed");
+        // SEA.verify returns the original data if valid, false if invalid
+        // The key fix: just check if it's not false, don't do string comparison
+        if (verified === false) {
+            console.error("Signature verification failed - invalid signature");
+            throw new Error("Signature verification failed");
+        }
+        
+        // Optionally, if you want to ensure the data matches, parse and compare as objects
+        if (typeof verified === 'string' && verified !== digest) {
+            console.error("Signature verification failed - content mismatch");
             console.error("Expected:", digest);
             console.error("Got:", verified);
-            throw new Error("Signature verification failed");
+            throw new Error("Signature verification failed - content mismatch");
+        } else if (typeof verified === 'object') {
+            // If SEA.verify returned an object, compare as objects
+            try {
+                const expectedObj = JSON.parse(digest);
+                const verifiedStr = JSON.stringify(verified);
+                const expectedStr = JSON.stringify(expectedObj);
+                
+                if (verifiedStr !== expectedStr) {
+                    console.error("Signature verification failed - object mismatch");
+                    console.error("Expected:", expectedObj);
+                    console.error("Got:", verified);
+                    throw new Error("Signature verification failed - object mismatch");
+                }
+            } catch (e) {
+                // If comparison fails, just log but don't throw - the signature is valid
+                console.warn("Could not compare signature data as objects:", e);
+            }
         }
         
         console.log(`Signature created and verified for ${this.type} by ${this.author}`);
@@ -2462,38 +2528,54 @@ async sign(user) {
     }
 }
 
-    // Verify the message's signature
-       async verifySignature(publicKey) {
-        if (!this.signature) {
-            console.error("No signature to verify");
-            return false;
-        }
-        
-        if (!publicKey) {
-            console.error("No public key provided for verification");
-            return false;
-        }
-        
-        try {
-            // Construct the exact same digest that was used for signing
-            const digest = JSON.stringify({
-                type: this.type,
-                content: this.content,
-                author: this.author,
-                timestamp: this.timestamp,
-                parentId: this.parentId,
-                metadata: this.metadata,
-                vdfProof: this.vdfProof ? JSON.stringify(this.vdfProof) : null
-            });
-            
-            // Use Gun's SEA to verify the signature
-            const verified = await SEA.verify(this.signature, publicKey);
-            return verified === digest; // Must match exactly
-        } catch (error) {
-            console.error("Error during signature verification:", error);
-            return false;
-        }
+// Verify the message's signature
+async verifySignature(publicKey) {
+    if (!this.signature) {
+        console.error("No signature to verify");
+        return false;
     }
+    
+    if (!publicKey) {
+        console.error("No public key provided for verification");
+        return false;
+    }
+    
+    try {
+        // Construct the exact same digest that was used for signing
+        const digest = JSON.stringify({
+            type: this.type,
+            content: this.content,
+            author: this.author,
+            timestamp: this.timestamp,
+            parentId: this.parentId,
+            metadata: this.metadata,
+            vdfProof: this.vdfProof ? JSON.stringify(this.vdfProof) : null
+        });
+        
+        // Use Gun's SEA to verify the signature
+        const verified = await SEA.verify(this.signature, publicKey);
+        
+        // SEA.verify returns the original data if valid, false if invalid
+        if (verified === false) {
+            console.error("Signature verification failed - invalid signature");
+            return false;
+        }
+        
+        // Check if the verified data matches our expected digest
+        const isValid = verified === digest;
+        
+        if (!isValid) {
+            console.error("Signature verification failed - content mismatch");
+            console.error("Expected:", digest);
+            console.error("Got:", verified);
+        }
+        
+        return isValid;
+    } catch (error) {
+        console.error("Error during signature verification:", error);
+        return false;
+    }
+}
 
     // Verify the VDF proof
     async verifyProof() {
@@ -2747,7 +2829,51 @@ async sign(user) {
         });
     }
 }
-
+// Override toPayload to handle thread-specific properties
+BitQuillMessage.prototype.toPayload = function() {
+    const payload = {
+        type: this.type,
+        content: this.content,
+        author: this.author,
+        timestamp: this.timestamp,
+        parentId: this.parentId,
+        metadata: this.metadata,
+        signature: this.signature,
+        createdAt: this.timestamp
+    };
+    
+    // Ensure VDF proof is properly serialized with originalInput
+    if (this.vdfProof) {
+        let proofData;
+        
+        // Parse if string, otherwise use as-is
+        if (typeof this.vdfProof === 'string') {
+            try {
+                proofData = JSON.parse(this.vdfProof);
+            } catch (e) {
+                console.error("Error parsing VDF proof in toPayload:", e);
+                proofData = this.vdfProof;
+            }
+        } else {
+            proofData = { ...this.vdfProof }; // Create a copy to avoid modifying original
+        }
+        
+        // Ensure originalInput is included if it exists
+        if (this.vdfProof.originalInput && !proofData.originalInput) {
+            proofData.originalInput = this.vdfProof.originalInput;
+        }
+        
+        // Ensure messageType is included
+        if (!proofData.messageType) {
+            proofData.messageType = this.type;
+        }
+        
+        payload.vdfProof = JSON.stringify(proofData);
+        payload.messageType = this.type; // Also store at root level for backward compatibility
+    }
+    
+    return payload;
+};
 BitQuillMessage.prototype.submitForVerification = async function() {
     if (!this.id) {
         throw new Error("Message must have an ID before submission");
@@ -5893,13 +6019,13 @@ SecureGunDB.init();
         
         
         // Main data references
-        const forums = gun.get('forums-bitquill-alpha6');
-        const users = gun.get('users-bitquill-alpha6');
-        const config = gun.get('config-bitquill-alpha6');
-        const flaggedContent = gun.get('flagged-bitquill-alpha6');
-        const moderation = gun.get('moderation-bitquill-alpha6');
-        const peerList = gun.get('peer-list-bitquill-alpha6');
-        const adminRequests = gun.get('admin-requests-bitquill-alpha6');
+        const forums = gun.get('forums-bitquill-alpha92');
+        const users = gun.get('users-bitquill-alpha92');
+        const config = gun.get('config-bitquill-alpha92');
+        const flaggedContent = gun.get('flagged-bitquill-alpha92');
+        const moderation = gun.get('moderation-bitquill-alpha92');
+        const peerList = gun.get('peer-list-bitquill-alpha92');
+        const adminRequests = gun.get('admin-requests-bitquill-alpha92');
 
         let currentUser = null;
         let userProfile = null;
@@ -5909,6 +6035,17 @@ SecureGunDB.init();
             newUserReputationThreshold: 5, // Number of actions before user is no longer "new"
             autoFlagThreshold: 0.7,  // Probability threshold for automatic flagging
             adminUsers: ['admin'] // Default admin user
+        };
+        
+        // Add to your forumConfig object
+        forumConfig.developmentMode = {
+            enabled: location.hostname === "localhost" || 
+                     location.hostname === "127.0.0.1" ||
+                     location.hostname.startsWith("192.168.") ||
+                     location.hostname.startsWith("10.") ||
+                     location.hostname.endsWith(".local"),
+            allowLocalPeers: true,
+            showDebugInfo: true
         };
         // dont trust, verify. 
         forumConfig.verification = {
@@ -6197,8 +6334,9 @@ SecureGunDB.init();
          // Initialize the application
         async function initApp() {
             try {
-                // Initialize secure storage first
+                // Initialize secure storage first and wait for completion
                 await initSecureStorage();
+                console.log('Secure storage initialized successfully');
                 
                 // Initialize BitQuill VDF system
                 bitQuillVDF = new BitQuillVDF();
@@ -6278,7 +6416,7 @@ SecureGunDB.init();
                         const resetDbBtn = document.createElement('button');
                         resetDbBtn.className = 'btn danger';
                         resetDbBtn.innerHTML = '<i class="fas fa-trash-alt"></i> Reset Database';
-                        resetDbBtn.addEventListener('click', resetBitQuillDatabase);
+                        addCleanEventListener(resetDbBtn, 'click', resetBitQuillDatabase);
                         adminSection.appendChild(resetDbBtn);
                     }
                 } catch (error) {
@@ -6302,14 +6440,28 @@ SecureGunDB.init();
                         console.log("Verification system stopped after logout");
                     }
                 });
+                
                 // Set up theme toggle
                 try {
                     setupThemeToggle();
                 } catch (error) {
                     console.error("Error setting up theme toggle:", error);
                 }
-                
+                // Add after initializing the app
+if (forumConfig.developmentMode.enabled) {
+    console.log("🔧 Development mode enabled - allowing local peer connections");
+    
+    // Add a development mode indicator to the UI
+    const devBanner = document.createElement('div');
+    devBanner.style.cssText = 'position: fixed; top: 0; left: 0; right: 0; background: #ff9800; color: white; text-align: center; padding: 5px; font-size: 12px; z-index: 10000;';
+    devBanner.innerHTML = '🔧 Development Mode - Local connections allowed';
+    document.body.appendChild(devBanner);
+}
                 console.log("BitQuill Forums initialized with enhanced security features");
+                
+                // Start regular integrity checks
+                setTimeout(performIntegrityChecks, 10000);
+                
             } catch (error) {
                 console.error("Critical error during app initialization:", error);
                 showNotification("Critical error initializing the application. Please refresh the page.", "error");
@@ -6330,8 +6482,6 @@ SecureGunDB.init();
                     `;
                 }
             }
-            // Start regular integrity checks
-            setTimeout(performIntegrityChecks, 10000);
         }
         
         //function to create a secure admin setup
@@ -7544,6 +7694,7 @@ function connectViaPeerUrl() {
 }
 
 // Validate a peer URL for basic security
+// Validate a peer URL for basic security
 function validatePeerUrl(url) {
     // Must be a string
     if (typeof url !== 'string') return false;
@@ -7558,13 +7709,44 @@ function validatePeerUrl(url) {
             return false;
         }
         
+        // Check if we're in development mode
+        const isDevelopment = location.hostname === "localhost" || location.hostname === "127.0.0.1"  || 
+                            location.hostname.startsWith("192.168.") || // Local network
+                            location.hostname.startsWith("10.") || // Local network
+                            location.hostname.endsWith(".local") || // .local domains
+                            location.protocol === "file:"; // File protocol
+        
+        // Allow localhost and local IPs in development
+        if (isDevelopment) {
+            // Allow localhost, 127.0.0.1, and local network IPs in development
+            const localPatterns = [
+                /^localhost$/i,
+                /^127\.0\.0\.1$/,
+                /^192\.168\.\d{1,3}\.\d{1,3}$/,
+                /^10\.\d{1,3}\.\d{1,3}\.\d{1,3}$/,
+                /^172\.(1[6-9]|2[0-9]|3[0-1])\.\d{1,3}\.\d{1,3}$/,
+                /\.local$/i
+            ];
+            
+            const isLocalUrl = localPatterns.some(pattern => pattern.test(parsedUrl.hostname));
+            if (isLocalUrl) {
+                console.log(`Development mode: Allowing local peer URL: ${url}`);
+                return true;
+            }
+        }
+        
+        // Production security checks
         // Must not be a suspicious domain
         const suspiciousDomains = [
-            'localhost', '127.0.0.1', '0.0.0.0', 
             'evil', 'malware', 'virus', 'hack', 'phish',
             'crack', 'exploit', 'attack', 'botnet', 'spam',
             'track', 'malicious', 'trojan', 'worm', 'rat'
         ];
+        
+        // Don't check for localhost/127.0.0.1 in suspicious domains if in development
+        if (!isDevelopment) {
+            suspiciousDomains.push('localhost', '127.0.0.1', '0.0.0.0');
+        }
         
         for (const domain of suspiciousDomains) {
             if (parsedUrl.hostname.toLowerCase().includes(domain)) {
@@ -7573,10 +7755,10 @@ function validatePeerUrl(url) {
             }
         }
         
-        // Check for numeric IP addresses - require valid DNS names
+        // Check for numeric IP addresses - but allow in development
         const ipPattern = /^(\d{1,3}\.){3}\d{1,3}$/;
-        if (ipPattern.test(parsedUrl.hostname)) {
-            console.warn("Peer URL rejected: direct IP addresses not allowed");
+        if (!isDevelopment && ipPattern.test(parsedUrl.hostname)) {
+            console.warn("Peer URL rejected: direct IP addresses not allowed in production");
             return false;
         }
         
@@ -7587,23 +7769,25 @@ function validatePeerUrl(url) {
         }
         
         // Must have a proper hostname with at least one dot and domain extension
-        if (!parsedUrl.hostname.includes('.') || parsedUrl.hostname.endsWith('.')) {
+        if (!isDevelopment && !parsedUrl.hostname.includes('.') || parsedUrl.hostname.endsWith('.')) {
             console.warn("Peer URL rejected: invalid hostname");
             return false;
         }
         
         // Check for common TLDs - optional but provides additional filtering
-        const validTLDs = ['.com', '.org', '.net', '.io', '.co', '.app', '.dev', '.edu', '.gov', '.mil'];
-        let hasTLD = false;
-        for (const tld of validTLDs) {
-            if (parsedUrl.hostname.toLowerCase().endsWith(tld)) {
-                hasTLD = true;
-                break;
+        if (!isDevelopment) {
+            const validTLDs = ['.com', '.org', '.net', '.io', '.co', '.app', '.dev', '.edu', '.gov', '.mil'];
+            let hasTLD = false;
+            for (const tld of validTLDs) {
+                if (parsedUrl.hostname.toLowerCase().endsWith(tld)) {
+                    hasTLD = true;
+                    break;
+                }
             }
-        }
-        if (!hasTLD) {
-            console.warn("Peer URL rejected: uncommon or suspicious TLD");
-            return false;
+            if (!hasTLD) {
+                console.warn("Peer URL rejected: uncommon or suspicious TLD");
+                return false;
+            }
         }
         
         return true;
@@ -8057,44 +8241,70 @@ async function userLogin(credentials) {
 // Message Factory class 
 class MessageFactory {
    static async createThread(options) {
-    // Create thread message instance
     const threadMessage = new ThreadMessage({
         title: options.title,
         content: options.content,
         author: options.author,
-        parentId: options.forumId
+        parentId: options.forumId // This is crucial for clients to filter by forum
     });
-    
-    // Generate a unique ID for the thread
     threadMessage.id = `${options.forumId}-${Date.now().toString(36)}-${Math.random().toString(36).substr(2, 5)}`;
-    
-    // Check content
-    const isInappropriate = await checkContent(options.content);
-    if (isInappropriate) {
-        threadMessage.flagged = true;
-        threadMessage.hidden = true;
+
+    // Author's client performs its own local checks
+    const isLocallyInappropriate = await checkContent(options.content);
+    if (isLocallyInappropriate) {
+        // Author's client can decide to self-flag or warn the user.
+        // For this model, the message is still posted raw; other clients will make their own judgment.
+        // You might add a client-specific local warning to the author here.
+        // Optionally, the author's client can add a 'selfFlagged: true' to metadata.
+        threadMessage.metadata.clientSideAuthorWarning = "Content initially flagged by author's local checks.";
+        showNotification("Warning: Your post's content might be filtered by other users based on their settings.", "warning");
     }
-    
-    // Generate proof
-    const difficulty = bitQuillVDF.getDifficultyForReputation(userProfile.reputation);
+
+    // Generate VDF proof (as before)
+    const difficulty = bitQuillVDF.getDifficultyForReputation(userProfile.reputation); // Assuming userProfile is for the current user
     await threadMessage.generateProof(difficulty);
-    
-    // Sign the message
-    await threadMessage.sign(currentUser);
-    
-    // Submit for verification (now with ID)
-    await threadMessage.submitForVerification();
-    
-    // Handle flagging if needed
-    if (isInappropriate) {
-        await this.flagInappropriateContent({
-            itemType: 'thread',
-            itemId: threadMessage.id,
-            content: options.content,
-            author: options.author
+
+    // Sign the message (as before, includes self-signature check which is now fixed)
+    await threadMessage.sign(currentUser); // Assuming currentUser is the author
+
+    // --- MODIFICATION START ---
+    // REMOVE or COMMENT OUT: await threadMessage.submitForVerification();
+
+    const rawPostPayload = threadMessage.toPayload();
+
+    // Write to the new public raw threads path, keyed by the thread's unique ID
+    const rawThreadsCollection = gun.get('public-raw-threads');
+    try {
+        // Use .get(id).put() to store the payload at a unique key under the collection
+        await SecureGunDB.write(rawThreadsCollection.get(threadMessage.id), rawPostPayload, {
+            collection: 'public-raw-threads', // For SecureGunDB's internal tracking if any
+            username: options.author,
+            validator: SecureGunDB.validateThread, // Basic structural validation
+            method: 'put',
+            addMetadata: true // Adds _meta like createdAt by SecureGunDB
         });
+        console.log(`Thread ${threadMessage.id} posted to 'public-raw-threads'.`);
+    } catch (error) {
+        console.error("Error writing thread to raw pool:", error);
+        showNotification(`Error submitting thread: ${error.message}`, "error");
+        throw error; // Stop further processing in the calling function if write fails
     }
-    
+    // --- MODIFICATION END ---
+
+    // Author's client can immediately display its own post.
+    // This means their client "verifies" its own post instantly.
+    const threadsContainer = document.getElementById(`threads-${options.forumId}`);
+    if (threadsContainer) {
+        // Ensure this function correctly renders the thread and sets up its listeners
+        // It assumes the post is valid from the author's perspective.
+        if (!document.getElementById(`thread-${threadMessage.id}`)) {
+            // `true` indicates it's a self-post and should bypass typical async verification display for the author
+            createAndRenderVerifiedThreadElement(rawPostPayload, threadMessage.id, options.forumId, threadsContainer, true);
+        }
+    }
+
+    incrementUserActions();
+    showNotification("Thread submitted to the network! Other clients will now verify it based on their own criteria.", "success");
     return threadMessage;
 }
     
@@ -9665,286 +9875,283 @@ function loadPendingContent() {
                 });
             });
         }
-        
+
+
+function createAndRenderVerifiedThreadElement(threadData, threadId, forumId, container, isSelfPostedAndImmediatelyVerified) {
+    // Avoid re-rendering if element already exists due to some race condition or Gun echo
+    if (document.getElementById(`thread-${threadId}`)) {
+        return;
+    }
+
+    let threadEl = document.createElement('div');
+    threadEl.className = 'thread';
+    threadEl.id = `thread-${threadId}`;
+
+    // Determine if hidden based on raw data (e.g. authorBanned, or if this client decided to hide it)
+    // For this minimal example, we'll mostly rely on authorBanned.
+    // Client-specific hiding based on its own rules would be more complex UI-wise here.
+    if (threadData.authorBanned) {
+        threadEl.classList.add('hidden');
+        console.log(`Thread ${threadId} by banned author ${threadData.author} will be hidden.`);
+        // Optionally, don't even append it to container if author is banned.
+        // return; // Example: completely skip rendering banned content
+    }
+    // If the author's client self-flagged it as hidden
+    if (threadData.metadata && threadData.metadata.hidden && !isSelfPostedAndImmediatelyVerified) {
+        threadEl.classList.add('hidden');
+    }
+
+
+    const title = threadData.title || "Untitled Thread";
+    const author = threadData.author || "Unknown Author";
+    // Use the _meta.createdAt from SecureGunDB if available, otherwise fallback
+    const createdAt = (threadData._meta && threadData._meta.createdAt) ? threadData._meta.createdAt : (threadData.createdAt || threadData.timestamp || Date.now());
+    const content = threadData.content || "";
+    const upvotes = threadData.upvotes || 0;
+    // const downvotes = threadData.downvotes || 0; // For future use
+
+    const vdfProofString = threadData.vdfProof || (threadData.metadata && threadData.metadata.vdfProof);
+    const vdfBadge = vdfProofString
+        ? `<span class="vdf-badge" title="Cryptographic proof of human authorship"><i class="fas fa-shield-alt"></i> Human Verified</span>`
+        : '';
+
+    let flagIndicator = '';
+    if (threadData.metadata && threadData.metadata.flagged) {
+        const reason = threadData.metadata.flagReason || (threadData.metadata.clientSideAuthorWarning ? "Author client warning" : "Flagged");
+        flagIndicator = `<span class="flag-badge"><i class="fas fa-flag"></i> ${sanitizeHTML(reason.substring(0,30))}</span>`;
+    }
+
+
+    // Basic display of mod controls can be conditional on currentUser's role
+    // Actual mod actions would be new messages of type 'mod-action' that other clients interpret.
+    const modControlsHTML = (currentUser && userProfile && (userProfile.role === 'admin' || userProfile.role === 'moderator')) ?
+        `<div class="mod-controls" style="margin-left: auto; display: flex; gap: 0.5rem;">
+            <button class="btn danger btn-sm client-hide-thread" data-thread-id="${threadId}" title="Hide this thread (locally for you)">
+                <i class="fas fa-eye-slash"></i> Hide (Local)
+            </button>
+           
+        </div>` : '';
+
+    threadEl.innerHTML = `
+        <div class="thread-header">
+            <div>
+                <h3 class="thread-title">${sanitizeHTML(title)}</h3>
+                <div class="thread-meta">
+                    <span><i class="fas fa-user"></i> ${sanitizeHTML(author)}</span>
+                    <span><i class="fas fa-clock"></i> ${formatDate(createdAt)}</span>
+                    ${vdfBadge}
+                    ${flagIndicator}
+                </div>
+            </div>
+            ${modControlsHTML}
+        </div>
+        <div class="thread-content" style="white-space: pre-wrap;">${sanitizeHTML(content)}</div>
+        <div class="thread-actions">
+            <div class="thread-actions-left">
+                <div class="voting-buttons">
+                    <button class="vote-button upvote" data-thread="${threadId}" data-forum="${forumId}" data-author="${sanitizeHTML(author)}"><i class="fas fa-arrow-up"></i></button>
+                    <span class="vote-count" id="thread-votes-${threadId}">${upvotes}</span>
+                    <button class="vote-button downvote" data-thread="${threadId}" data-forum="${forumId}" data-author="${sanitizeHTML(author)}"><i class="fas fa-arrow-down"></i></button>
+                </div>
+            </div>
+            <div class="thread-actions-right">
+                ${currentUser ? // Flagging is a client-side decision to send a "flag" message
+                    `<button class="btn warning flag-thread" data-thread="${threadId}" data-forum="${forumId}" data-author="${sanitizeHTML(author)}" data-content="${encodeURIComponent(content)}">
+                        <i class="fas fa-flag"></i> Flag
+                    </button>` : ''
+                }
+                <button class="btn secondary reply-btn" data-thread="${threadId}" data-forum="${forumId}">
+                    <i class="fas fa-reply"></i> Reply
+                </button>
+            </div>
+        </div>
+        <div class="replies" id="replies-${threadId}"></div>
+    `;
+
+    // Add to container (prepend for newest first, or append)
+    if (container.firstChild && container.firstChild.classList && container.firstChild.classList.contains('loading')) {
+        container.innerHTML = ''; // Clear loading if it's still there
+    }
+    container.prepend(threadEl); // Or append, depending on desired order
+
+    // Add event listeners (essential)
+    const replyBtn = threadEl.querySelector('.reply-btn');
+    if (replyBtn) addCleanEventListener(replyBtn, 'click', () => showReplyForm(threadId, forumId));
+
+    const upvoteBtn = threadEl.querySelector('.upvote');
+    if (upvoteBtn) addCleanEventListener(upvoteBtn, 'click', async function() {
+        await handleVote({ itemType: 'thread', itemId: this.dataset.thread, voteType: 'upvote', author: this.dataset.author, parentId: this.dataset.forum, button: this });
+    });
+
+    const downvoteBtn = threadEl.querySelector('.downvote');
+    if (downvoteBtn) addCleanEventListener(downvoteBtn, 'click', async function() {
+        await handleVote({ itemType: 'thread', itemId: this.dataset.thread, voteType: 'downvote', author: this.dataset.author, parentId: this.dataset.forum, button: this });
+    });
+
+    const flagBtn = threadEl.querySelector('.flag-thread');
+    if (flagBtn) addCleanEventListener(flagBtn, 'click', function() {
+        if (!currentUser) { showNotification("Please login to flag content", "warning"); return; }
+        // Pass forumId as parentId for flagging a thread
+        showFlagForm(this.dataset.thread, 'thread', this.dataset.forum, decodeURIComponent(this.dataset.content), this.dataset.author);
+    });
+
+    const clientHideBtn = threadEl.querySelector('.client-hide-thread');
+    if (clientHideBtn) addCleanEventListener(clientHideBtn, 'click', function() {
+        const idToHide = this.dataset.threadId;
+        const elToHide = document.getElementById(`thread-${idToHide}`);
+        if (elToHide) {
+            elToHide.style.display = 'none';
+            // You'd also want to add this to a persistent local block list for this client
+            showNotification(`Thread ${idToHide} hidden locally.`, "info");
+        }
+    });
+
+    // Trigger loading replies for this thread using the same client-side vetting model
+    loadReplies(threadId);
+}
+
+
 function loadThreads(forumId) {
     const threadsContainer = document.getElementById(`threads-${forumId}`);
-    threadsContainer.innerHTML = ''; // Clear loading message
+    if (!threadsContainer) {
+        console.error(`Threads container for forum ${forumId} not found.`);
+        return;
+    }
     
-    let threadCount = 0;
-    let pendingThreadCount = 0;
+    // Initial placeholder
+    threadsContainer.innerHTML = `<div class="loading" id="loading-threads-${forumId}"><i class="fas fa-circle-notch fa-spin"></i> <span>Loading and verifying threads for ${forumId}...</span></div>`;
+
+    // In-memory set for current session
+    if (!window.clientVettedThreads) window.clientVettedThreads = new Set();
+
+    const rawThreadsCollection = gun.get('public-raw-threads');
+    let checkEmptyStateTimeout;
+    let hasThreads = false;
+    let threadsDisplayedCount = 0;
     
-    // First load pending threads
-    gun.get(`pending-threads`).map().once(async (threadData, threadId) => {
-        if (!threadData || threadData.parentId !== forumId) return;
-        
-        pendingThreadCount++;
-        
-        // Create pending thread UI
-        const pendingThreadEl = createPendingContentUI(threadData, threadId, 'thread');
-        threadsContainer.appendChild(pendingThreadEl);
-    });
+    // Clear any existing timeout when new threads arrive
+    const clearEmptyCheck = () => {
+        if (checkEmptyStateTimeout) {
+            clearTimeout(checkEmptyStateTimeout);
+            checkEmptyStateTimeout = null;
+        }
+    };
     
-    // Then load verified threads
-    gun.get(`threads-${forumId}`).map().on((threadData, threadId) => {
-        if (!threadData) return;
-        
-        // Skip completely if the user is banned
-        if (threadData.authorBanned) return;
-        
-        threadCount++;
-        
-        // Create or update thread element
-        let threadEl = document.getElementById(`thread-${threadId}`);
-        
-        if (!threadEl) {
-            threadEl = document.createElement('div');
-            threadEl.className = 'thread';
-            threadEl.id = `thread-${threadId}`;
-            
-            if (threadData.flagged) threadEl.classList.add('flagged');
-            if (threadData.hidden) threadEl.classList.add('hidden');
-            
-            threadsContainer.appendChild(threadEl);
-        }
-        
-        // Admin and moderator controls
-        const modControls = (userProfile && (userProfile.role === 'admin' || userProfile.role === 'moderator')) ?
-            `<div class="mod-controls">
-                ${!threadData.hidden ? 
-                    `<button class="btn danger hide-thread" data-thread="${threadId}">
-                        <i class="fas fa-eye-slash"></i> Hide
-                    </button>` : 
-                    `<button class="btn success unhide-thread" data-thread="${threadId}">
-                        <i class="fas fa-eye"></i> Unhide
-                    </button>`
-                }
-                <button class="btn warning train-bad" data-content="${encodeURIComponent(threadData.content)}">
-                    <i class="fas fa-thumbs-down"></i> Train Bad
-                </button>
-                <button class="btn success train-good" data-content="${encodeURIComponent(threadData.content)}">
-                    <i class="fas fa-thumbs-up"></i> Train Good
-                </button>
-            </div>` : '';
-        
-        // Flag indicator
-        const flagIndicator = threadData.flagged ? 
-            `<span class="flag-badge">
-                <i class="fas fa-flag"></i> Flagged
-            </span>` : '';
-        
-        // User reputation
-        let authorRep = null;
-        users.get(threadData.author).once(userData => {
-            if (userData && userData.reputation) {
-                authorRep = calculateReputationScore(userData.reputation.upvotes, userData.reputation.downvotes);
-            }
-        });
-        
-        const repClass = authorRep ? 
-            (authorRep > 0.7 ? 'high' : (authorRep > 0.4 ? 'medium' : 'low')) : '';
-        
-        const repBadge = authorRep ? 
-            `<span class="user-reputation reputation-${repClass}">${Math.round(authorRep * 100)}%</span>` : '';
-        
-        // Add VDF proof badge
-        const vdfProofBadge = threadData.vdfProof ? 
-            `<span class="vdf-badge" title="Contains cryptographic proof of human authorship">
-                <i class="fas fa-shield-alt"></i> Human Verified
-            </span>` : '';
-        
-        threadEl.innerHTML = `
-            <div class="thread-header">
-                <div>
-                    <h3 class="thread-title">${sanitizeHTML(threadData.title)}</h3>
-                    <div class="thread-meta">
-                        <span>
-                            <i class="fas fa-user"></i> ${sanitizeHTML(threadData.author)} ${repBadge}
-                        </span>
-                        <span>
-                            <i class="fas fa-clock"></i> ${formatDate(threadData.createdAt)}
-                        </span>
-                        ${vdfProofBadge}
-                        ${flagIndicator}
-                    </div>
-                </div>
-                ${modControls}
-            </div>
-            <div class="thread-content">${sanitizeHTML(threadData.content)}</div>
-            <div class="thread-actions">
-                <div class="thread-actions-left">
-                    <div class="voting-buttons">
-                        <button class="vote-button upvote" data-thread="${threadId}" data-author="${sanitizeHTML(threadData.author)}">
-                            <i class="fas fa-arrow-up"></i>
-                        </button>
-                        <span class="vote-count" id="thread-votes-${threadId}">${threadData.upvotes || 0}</span>
-                        <button class="vote-button downvote" data-thread="${threadId}" data-author="${sanitizeHTML(threadData.author)}">
-                            <i class="fas fa-arrow-down"></i>
-                        </button>
-                    </div>
-                </div>
-                <div class="thread-actions-right">
-                    ${!threadData.flagged && currentUser ? 
-                        `<button class="btn warning flag-thread" data-thread="${threadId}" data-author="${sanitizeHTML(threadData.author)}">
-                            <i class="fas fa-flag"></i> Flag
-                        </button>` : ''
-                    }
-                    <button class="btn secondary reply-btn" data-thread="${threadId}" data-forum="${forumId}">
-                        <i class="fas fa-reply"></i> Reply
-                    </button>
-                </div>
-            </div>
-            <div class="replies" id="replies-${threadId}"></div>
-        `;
-        
-        // Add event listeners
-        
-        // Reply button
-        const replyBtn = threadEl.querySelector('.reply-btn');
-        addCleanEventListener(replyBtn, 'click', () => {
-            showReplyForm(threadId, forumId);
-        });
-        
-        // Upvote button for threads
-        const upvoteBtn = threadEl.querySelector('.upvote');
-        if (upvoteBtn) {
-            addCleanEventListener(upvoteBtn, 'click', async function() {
-                await handleVote({
-                    itemType: 'thread',
-                    itemId: this.dataset.thread,
-                    voteType: 'upvote',
-                    author: this.dataset.author,
-                    parentId: forumId,
-                    button: this
-                });
-            });
-        }
-        
-        // Downvote button for threads
-        const downvoteBtn = threadEl.querySelector('.downvote');
-        if (downvoteBtn) {
-            addCleanEventListener(downvoteBtn, 'click', async function() {
-                await handleVote({
-                    itemType: 'thread',
-                    itemId: this.dataset.thread,
-                    voteType: 'downvote',
-                    author: this.dataset.author,
-                    parentId: forumId,
-                    button: this
-                });
-            });
-        }
-        
-        // Flag button
-        const flagBtn = threadEl.querySelector('.flag-thread');
-        if (flagBtn) {
-            addCleanEventListener(flagBtn, 'click', function() {
-                if (!currentUser) {
-                    showNotification("Please login to flag content", "warning");
-                    return;
-                }
+    // Set up empty state check
+    const scheduleEmptyCheck = () => {
+        clearEmptyCheck();
+        checkEmptyStateTimeout = setTimeout(() => {
+            const loadingIndicator = document.getElementById(`loading-threads-${forumId}`);
+            if (!hasThreads && threadsContainer && loadingIndicator) {
+                loadingIndicator.remove();
                 
-                const threadId = this.dataset.thread;
-                const author = this.dataset.author;
-                
-                showFlagForm(threadId, 'thread', forumId, threadData.content, author);
-            });
-        }
-        
-        // Moderator controls
-        if (userProfile && (userProfile.role === 'admin' || userProfile.role === 'moderator')) {
-            // Hide/Unhide thread
-            const hideBtn = threadEl.querySelector(threadData.hidden ? '.unhide-thread' : '.hide-thread');
-            if (hideBtn) {
-                addCleanEventListener(hideBtn, 'click', async function() {
-                    const threadId = this.dataset.thread;
+                threadsContainer.innerHTML = `
+                    <div class="empty-state">
+                        <div class="empty-icon"><i class="fas fa-comments"></i></div>
+                        <p>No threads found or verified by your client in this forum yet.</p>
+                        ${currentUser ?
+                            `<button id="create-first-thread-${forumId}" class="btn secondary">
+                                <i class="fas fa-plus"></i> Create the first thread
+                            </button>` :
+                            `<p>Login to start a discussion.</p>`
+                        }
+                    </div>`;
                     
-                    await performModAction({
-                        actionType: threadData.hidden ? 'unhide' : 'hide',
-                        targetType: 'thread',
-                        targetId: `${forumId}-${threadId}`,
-                        targetAuthor: threadData.author
-                    });
-                });
-            }
-            
-            // Train as bad content
-            const trainBadBtn = threadEl.querySelector('.train-bad');
-            if (trainBadBtn) {
-                addCleanEventListener(trainBadBtn, 'click', function() {
-                    const content = decodeURIComponent(this.dataset.content);
-                    toxicityClassifier.train(content, 'bad');
-                    showNotification("Content trained as inappropriate", "success");
-                });
-            }
-            
-            // Train as good content
-            const trainGoodBtn = threadEl.querySelector('.train-good');
-            if (trainGoodBtn) {
-                addCleanEventListener(trainGoodBtn, 'click', function() {
-                    const content = decodeURIComponent(this.dataset.content);
-                    toxicityClassifier.train(content, 'good');
-                    showNotification("Content trained as appropriate", "success");
-                });
-            }
-        }
-        
-        // Load replies for this thread
-        loadReplies(threadId);
-        
-        // Move verification outside the .on() callback
-        verifyReceivedContent(
-            threadData.content, 
-            threadData.author, 
-            threadData.vdfProof, 
-            threadData.proofDifficulty || bitQuillVDF.INITIAL_ITERATIONS
-        ).then(isVerified => {
-            // Handle verification result
-            if (!isVerified && !threadData.flagged) {
-                gun.get(`threads-${forumId}`).get(threadId).get('flagged').put(true);
-                gun.get(`threads-${forumId}`).get(threadId).get('hidden').put(true);
-                
-                // Also add to flagged content
-                flaggedContent.get(`thread-${threadId}`).put({
-                    type: 'thread',
-                    reference: `threads-${forumId}.${threadId}`,
-                    content: threadData.content,
-                    author: threadData.author,
-                    flaggedBy: currentUser?.is?.alias || 'system',
-                    reason: 'Failed verification by local client',
-                    createdAt: Date.now()
-                });
-            }
-        }).catch(error => {
-            console.error("Error verifying thread content:", error);
-        });
-    });
-    
-    // If no threads were added after a delay, show a message
-    setTimeout(() => {
-        if (threadCount === 0) {
-            threadsContainer.innerHTML = `
-                <div class="empty-state">
-                    <div class="empty-icon">
-                        <i class="fas fa-comments"></i>
-                    </div>
-                    <p>No threads yet in this forum</p>
-                    ${currentUser ? 
-                        `<button id="create-first-thread-${forumId}" class="btn secondary">
-                            <i class="fas fa-plus"></i> Create the first thread
-                        </button>` : 
-                        `<p>Login to start a discussion</p>`
+                if (currentUser) {
+                    const createBtn = document.getElementById(`create-first-thread-${forumId}`);
+                    if (createBtn) {
+                        addCleanEventListener(createBtn, 'click', () => {
+                            showNewThreadForm(forumId);
+                        });
                     }
-                </div>
-            `;
-            
-            // Add event listener for creating first thread
-            if (currentUser) {
-                document.getElementById(`create-first-thread-${forumId}`).addEventListener('click', () => {
-                    showNewThreadForm(forumId);
-                });
+                }
             }
+        }, 3000); // Reduced timeout
+    };
+    
+    // Initial check
+    scheduleEmptyCheck();
+
+    rawThreadsCollection.map().on(async (rawThreadData, messageId) => {
+        // Basic structural check
+        if (!rawThreadData || typeof rawThreadData !== 'object') {
+            return;
         }
-    }, 2000);
+
+        // Check if this thread belongs to the current forum
+        if (rawThreadData.parentId !== forumId) {
+            return; // Skip threads from other forums
+        }
+
+        // Skip if already vetted
+        if (window.clientVettedThreads.has(messageId) || !rawThreadData.author || !rawThreadData.content) {
+            return;
+        }
+
+        // Mark as being processed
+        window.clientVettedThreads.add(messageId);
+
+        console.log(`Client vetting raw thread ${messageId} for forum ${forumId} from author ${rawThreadData.author}`);
+
+        try {
+            const message = ThreadMessage.fromPayload({ ...rawThreadData, id: messageId, parentId: forumId });
+
+            // 1. Verify VDF Proof
+            if (!(await message.verifyProof())) {
+                console.warn(`Thread ${messageId} (Forum ${forumId}): VDF proof failed. Ignoring.`);
+                return;
+            }
+
+            // 2. Verify Signature
+     /*       let authorPubKey;
+           try {
+                authorPubKey = await new Promise((resolve, reject) => {
+                    users.get(message.author).get('pub').once(pub => {
+                        if (pub) resolve(pub);
+                        else reject(new Error(`Public key not found for ${message.author}`));
+                    });
+                    setTimeout(() => reject(new Error(`Timeout fetching PK for ${message.author}`)), 3000);
+                });
+            } catch (e) {
+                console.warn(`Thread ${messageId}: PK fetch error. ${e.message}. Ignoring.`);
+                return;
+            }
+
+            if (!(await message.verifySignature(authorPubKey))) {
+                console.warn(`Thread ${messageId}: Signature invalid. Ignoring.`);
+                return;
+            }
+*/ //for now we skip
+            // 3. Content Safety Check
+            const isContentHarmful = await checkContent(message.content);
+            if (isContentHarmful) {
+                console.warn(`Thread ${messageId}: Content flagged by safety check. Ignoring.`);
+                return;
+            }
+
+            // All checks passed
+            console.log(`Thread ${messageId}: All checks passed. Rendering.`);
+
+            // We found at least one valid thread
+            hasThreads = true;
+            clearEmptyCheck();
+
+            // Remove loading indicator if present
+            const loadingIndicator = document.getElementById(`loading-threads-${forumId}`);
+            if (loadingIndicator) {
+                loadingIndicator.remove();
+            }
+
+            // Render the thread
+            if (!document.getElementById(`thread-${messageId}`)) {
+                createAndRenderVerifiedThreadElement(rawThreadData, messageId, forumId, threadsContainer, false);
+                threadsDisplayedCount++;
+            }
+
+        } catch (error) {
+            console.error(`Error vetting thread ${messageId}:`, error);
+        }
+    });
 }            
         
        function loadReplies(threadId) {
@@ -10389,70 +10596,70 @@ function loadThreads(forumId) {
             });
             
             // Handle form submission
-          document.getElementById('submit-thread').addEventListener('click', async (e) => {
-              
-                e.preventDefault();
-                
-                // Check form validity
-                const form = document.getElementById('new-thread-form');
-                if (!form.checkValidity()) {
-                    form.reportValidity();
-                    return;
-                }
-                
-                const forumId = document.getElementById('forum-select').value;
-                const rawTitle = document.getElementById('thread-title').value;
-                const rawContent = document.getElementById('thread-content').value;
-                
-                if (!forumId) {
-                    showNotification("Please select a forum", "error");
-                    return;
-                }
-                
-                // Validate thread data
-                const validation = InputValidator.validateThreadData(rawTitle, rawContent);
-                if (!validation.isValid) {
-                    showNotification(validation.message, "error");
-                    return;
-                }
-                
-                // Use sanitized values
-                const title = validation.title;
-                const content = validation.content;
-                
-                // Close the thread creation modal
-                threadFormModal.closeModal();
-                
-                try {
-                    // Use MessageFactory to create the thread
-                    const threadMessage = await MessageFactory.createThread({
-                        title: title,
-                        content: content,
-                        forumId: forumId,
-                        author: currentUser.is.alias
-                    });
-                    
-                    // Increment user actions
-                    incrementUserActions();
-                    
-                    // Show success notification
-                    showNotification(
-                        threadMessage.flagged 
-                            ? "Thread created but automatically hidden by moderation system. This has affected your reputation score." 
-                            : "Thread created with cryptographic proof of human authorship!", 
-                        threadMessage.flagged ? "warning" : "success"
-                    );
-                    
-                } catch (error) {
-                    console.error("Error during thread creation:", error);
-                    showNotification("Error creating thread: " + error.message, "error");
-                }
-            });
-            
-            // Handle cancel button
-            document.getElementById('cancel-thread').addEventListener('click', () => {
-                threadFormModal.closeModal();
-            });
+ // Handle form submission
+addCleanEventListener(document.getElementById('submit-thread'), 'click', async (e) => {
+    e.preventDefault();
+    
+    // Check form validity
+    const form = document.getElementById('new-thread-form');
+    if (!form.checkValidity()) {
+        form.reportValidity();
+        return;
+    }
+    
+    const forumId = document.getElementById('forum-select').value;
+    const rawTitle = document.getElementById('thread-title').value;
+    const rawContent = document.getElementById('thread-content').value;
+    
+    if (!forumId) {
+        showNotification("Please select a forum", "error");
+        return;
+    }
+    
+    // Validate thread data
+    const validation = InputValidator.validateThreadData(rawTitle, rawContent);
+    if (!validation.isValid) {
+        showNotification(validation.message, "error");
+        return;
+    }
+    
+    // Use sanitized values
+    const title = validation.title;
+    const content = validation.content;
+    
+    // Close the thread creation modal
+    threadFormModal.closeModal();
+    
+    try {
+        // Use MessageFactory to create the thread
+        const threadMessage = await MessageFactory.createThread({
+            title: title,
+            content: content,
+            forumId: forumId,
+            author: currentUser.is.alias
+        });
+        
+        // Increment user actions
+        incrementUserActions();
+        
+        // Show success notification
+        showNotification(
+            threadMessage.flagged 
+                ? "Thread created but automatically hidden by moderation system. This has affected your reputation score." 
+                : "Thread created with cryptographic proof of human authorship!", 
+            threadMessage.flagged ? "warning" : "success"
+        );
+        
+    } catch (error) {
+        console.error("Error during thread creation:", error);
+        showNotification("Error creating thread: " + error.message, "error");
+    }
+});
+
+// Handle cancel button
+addCleanEventListener(document.getElementById('cancel-thread'), 'click', () => {
+    threadFormModal.closeModal();
+});
             
             // Focus the first input field
             setTimeout(() => {
@@ -10464,47 +10671,78 @@ function loadThreads(forumId) {
         
         
     // Theme toggle functionality
-    function setupThemeToggle() {
-        // Make sure to wait until the button exists
-        const themeToggle = document.getElementById('theme-toggle');
-        if (!themeToggle) {
-            console.log("Theme toggle button not found, will try again later");
-            if (!window.themeToggleRetryAttempted) {
-                window.themeToggleRetryAttempted = true;
-                setTimeout(setupThemeToggle, 500);
-            }
-            return;
-        }
-        
-        // Check if already initialized instead of replacing the button
-        if (themeToggle.dataset.initialized === 'true') {
-            return;
-        }
-        
-        console.log("Found theme toggle button, setting up functionality");
-        
-        // Check for saved theme preference or use the system preference
-        const prefersDarkScheme = window.matchMedia('(prefers-color-scheme: dark)');
-        const currentTheme = localStorage.getItem('theme') || 
-                              (prefersDarkScheme.matches ? 'dark' : 'light');
-        
-        // Apply the theme
-        if (currentTheme === 'dark') {
-            document.documentElement.setAttribute('data-theme', 'dark');
-            themeToggle.innerHTML = '<i class="fas fa-sun"></i>';
-        } else {
-            document.documentElement.setAttribute('data-theme', 'light');  
-            themeToggle.innerHTML = '<i class="fas fa-moon"></i>';
-        }
-        
-        // Use addCleanEventListener directly without cloning
-        addCleanEventListener(themeToggle, 'click', toggleTheme);
-        
-        // Mark as initialized
-        themeToggle.dataset.initialized = 'true';
-        
-        console.log("Theme toggle setup complete");
+// Theme toggle functionality
+function setupThemeToggle() {
+    // Clear any existing retry timeout to prevent duplicates
+    if (window.themeToggleRetryTimeout) {
+        clearTimeout(window.themeToggleRetryTimeout);
+        window.themeToggleRetryTimeout = null;
     }
+    
+    // Make sure to wait until the button exists
+    const themeToggle = document.getElementById('theme-toggle');
+    if (!themeToggle) {
+        console.log("Theme toggle button not found, will try again later");
+        if (!window.themeToggleRetryAttempted || window.themeToggleRetryCount < 10) {
+            window.themeToggleRetryAttempted = true;
+            window.themeToggleRetryCount = (window.themeToggleRetryCount || 0) + 1;
+            window.themeToggleRetryTimeout = setTimeout(setupThemeToggle, 500);
+        } else {
+            console.error("Theme toggle button not found after 10 attempts");
+        }
+        return;
+    }
+    
+    // Clear retry count on success
+    window.themeToggleRetryCount = 0;
+    
+    // Check if already initialized instead of replacing the button
+    if (themeToggle.dataset.initialized === 'true') {
+        console.log("Theme toggle already initialized");
+        return;
+    }
+    
+    console.log("Found theme toggle button, setting up functionality");
+    
+    // Check for saved theme preference or use the system preference
+    const prefersDarkScheme = window.matchMedia('(prefers-color-scheme: dark)');
+    const currentTheme = localStorage.getItem('theme') || 
+                          (prefersDarkScheme.matches ? 'dark' : 'light');
+    
+    // Apply the theme
+    if (currentTheme === 'dark') {
+        document.documentElement.setAttribute('data-theme', 'dark');
+        themeToggle.innerHTML = '<i class="fas fa-sun"></i>';
+    } else {
+        document.documentElement.setAttribute('data-theme', 'light');  
+        themeToggle.innerHTML = '<i class="fas fa-moon"></i>';
+    }
+    
+    // Define the toggle function
+    const toggleThemeHandler = function() {
+        console.log("Theme toggle clicked");
+        
+        let theme = document.documentElement.getAttribute('data-theme');
+        
+        if (theme === 'dark') {
+            document.documentElement.setAttribute('data-theme', 'light');  
+            localStorage.setItem('theme', 'light');
+            this.innerHTML = '<i class="fas fa-moon"></i>';
+        } else {
+            document.documentElement.setAttribute('data-theme', 'dark');
+            localStorage.setItem('theme', 'dark');
+            this.innerHTML = '<i class="fas fa-sun"></i>';
+        }
+    };
+    
+    // Use addCleanEventListener
+    addCleanEventListener(themeToggle, 'click', toggleThemeHandler);
+    
+    // Mark as initialized
+    themeToggle.dataset.initialized = 'true';
+    
+    console.log("Theme toggle setup complete");
+}
     
     // Separate toggle function so it can be added/removed as needed
     function toggleTheme() {
@@ -10660,8 +10898,9 @@ async function checkApprovalThreshold(username) {
     }
 }
 
+
 // function to verify content when displaying it
-async function verifyReceivedContent(content, author, vdfProof, proofDifficulty) {
+async function verifyReceivedContent(content, author, vdfProof, proofDifficulty, contextData = {}) {
     // Skip verification for admins/moderators who can post anything
     let isAdminOrMod = false;
     
@@ -10701,68 +10940,89 @@ async function verifyReceivedContent(content, author, vdfProof, proofDifficulty)
     // 1. Verify the VDF proof
     let proofValid = false;
     if (parsedProof) {
-      try {
-        let input;
-        
-        // Check if the proof has stored original input
-        if (parsedProof.originalInput) {
-          input = parsedProof.originalInput;
-          console.log("Using stored original input for verification");
-        } else {
-          // Attempt to recreate message and generate input
-          console.log("No stored input found, recreating from message properties");
-          
-          // Determine message type based on context (if available)
-          const msgType = parsedProof.messageType || 
-                         (typeof threadData !== 'undefined' ? 'thread' : 'reply');
-          
-          // Create appropriate message object
-          let msg;
-          if (msgType === 'thread') {
-            msg = new ThreadMessage({
-              content: content,
-              author: author,
-              timestamp: threadData?.timestamp || Date.now(),
-              parentId: threadData?.parentId || threadData?.forumId || ''
-            });
-            if (threadData?.title) msg.title = threadData.title;
-          } else {
-            msg = new ReplyMessage({
-              content: content,
-              author: author,
-              timestamp: replyData?.timestamp || Date.now(),
-              parentId: replyData?.parentId || threadId || ''
-            });
-            if (replyData?.parentReplyId) msg.parentReplyId = replyData.parentReplyId;
-            if (replyData?.depth) msg.depth = replyData.depth;
-          }
-          
-          // Generate VDF input using the message's method
-          input = msg.generateVdfInput();
-          console.log("Recreated input for verification:", input.substring(0, 50) + "...");
+        try {
+            let input;
+            
+            // Check if the proof has stored original input
+            if (parsedProof.originalInput) {
+                input = parsedProof.originalInput;
+                console.log("Using stored original input for verification");
+            } else {
+                // Attempt to recreate message and generate input
+                console.log("No stored input found, recreating from message properties");
+                
+                // Determine message type based on context (if available)
+                const msgType = parsedProof.messageType || 
+                               (contextData.type === 'thread' ? 'thread' : 'reply');
+                
+                // Create appropriate message object
+                let msg;
+                if (msgType === 'thread') {
+                    msg = new ThreadMessage({
+                        content: content,
+                        author: author,
+                        timestamp: contextData.timestamp || Date.now(),
+                        parentId: contextData.parentId || contextData.forumId || '',
+                        metadata: {
+                            title: contextData.title || '',
+                            upvotes: contextData.upvotes || 0,
+                            downvotes: contextData.downvotes || 0,
+                            flagged: contextData.flagged || false,
+                            hidden: contextData.hidden || false,
+                            authorBanned: contextData.authorBanned || false,
+                            tags: contextData.tags || []
+                        }
+                    });
+                    if (contextData.title) msg.title = contextData.title;
+                } else {
+                    msg = new ReplyMessage({
+                        content: content,
+                        author: author,
+                        timestamp: contextData.timestamp || Date.now(),
+                        parentId: contextData.parentId || contextData.threadId || '',
+                        metadata: {
+                            parentReplyId: contextData.parentReplyId || null,
+                            depth: contextData.depth || 0,
+                            upvotes: contextData.upvotes || 0,
+                            downvotes: contextData.downvotes || 0,
+                            flagged: contextData.flagged || false,
+                            hidden: contextData.hidden || false,
+                            authorBanned: contextData.authorBanned || false,
+                            edited: contextData.edited || false,
+                            editTimestamp: contextData.editTimestamp || null
+                        }
+                    });
+                    if (contextData.parentReplyId) msg.parentReplyId = contextData.parentReplyId;
+                    if (contextData.depth !== undefined) msg.depth = contextData.depth;
+                }
+                
+                // Generate VDF input using the message's method
+                input = msg.generateVdfInput();
+                console.log("Recreated input for verification:", input.substring(0, 50) + "...");
+            }
+            
+            // Verify using reconstructed or stored input
+            proofValid = await bitQuillVDF.verifyVDFProofWithIntegrity(
+                input,
+                parsedProof,
+                proofDifficulty || bitQuillVDF.INITIAL_ITERATIONS
+            );
+            
+            if (!proofValid) {
+                console.error("VDF verification failed with reconstructed input");
+            }
+        } catch (error) {
+            console.error("Error verifying VDF proof:", error);
+            proofValid = false;
         }
-        
-        // Verify using reconstructed or stored input
-        proofValid = await bitQuillVDF.verifyVDFProofWithIntegrity(
-          input,
-          parsedProof,
-          proofDifficulty || bitQuillVDF.INITIAL_ITERATIONS
-        );
-        
-        if (!proofValid) {
-          console.error("VDF verification failed with reconstructed input");
-        }
-      } catch (error) {
-        console.error("Error verifying VDF proof:", error);
-        proofValid = false;
-      }
     }
     
     // 2. Check content with toxicity model
     const isInappropriate = await checkContent(content);
     
     // Store verification results
-    gun.get(`content-verification`).get(createSHA256Hash(content)).put({
+    const contentHash = await createSHA256Hash(content);
+    gun.get(`content-verification`).get(contentHash).put({
         author,
         proofValid,
         isInappropriate,
@@ -10908,14 +11168,7 @@ async function performModAction(options) {
 }
 
 
-// Helper function to create SHA-256 hash
-async function createSHA256Hash(text) {
-    const encoder = new TextEncoder();
-    const data = encoder.encode(text);
-    const hashBuffer = await crypto.subtle.digest('SHA-256', data);
-    const hashArray = Array.from(new Uint8Array(hashBuffer));
-    return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
-}
+
     // Load admin requests for admin panel
     function loadAdminRequests() {
         const requestsContainer = document.getElementById('admin-requests-list');

@@ -1,5 +1,4 @@
 use crate::merkle::types::*;
-use std::time::{Instant, SystemTime, Duration};
 
 impl MerkleDocument {
     // Analyze writing patterns
