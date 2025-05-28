@@ -2839,9 +2839,9 @@ BitQuillMessage.prototype.toPayload = function() {
         parentId: this.parentId,
         metadata: this.metadata,
         signature: this.signature,
-        createdAt: this.timestamp
+        createdAt: this.timestamp,
+        authorPubKey: currentUser ? currentUser.is.pub : null
     };
-    
     // Ensure VDF proof is properly serialized with originalInput
     if (this.vdfProof) {
         let proofData;
@@ -8308,7 +8308,7 @@ class MessageFactory {
     return threadMessage;
 }
     
-    static async createReply(options) {
+   static async createReply(options) {
     const { content, threadId, author, parentReplyId, parentDepth } = options;
     
     // Create reply message instance
@@ -8323,11 +8323,11 @@ class MessageFactory {
     // Generate a unique ID for the reply
     replyMessage.id = `${threadId}-${Date.now().toString(36)}-${Math.random().toString(36).substr(2, 5)}`;
     
-    // Check content
-    const isInappropriate = await checkContent(content);
-    if (isInappropriate) {
-        replyMessage.flagged = true;
-        replyMessage.hidden = true;
+    // Author's client performs its own local checks
+    const isLocallyInappropriate = await checkContent(content);
+    if (isLocallyInappropriate) {
+        replyMessage.metadata.clientSideAuthorWarning = "Content initially flagged by author's local checks.";
+        showNotification("Warning: Your reply might be filtered by other users based on their settings.", "warning");
     }
     
     // Generate proof
@@ -8340,19 +8340,26 @@ class MessageFactory {
     // Sign the message
     await replyMessage.sign(currentUser);
     
-    // Submit for verification (now with ID)
-    await replyMessage.submitForVerification();
+    // CHANGE: Write to public raw pool instead of verification
+    const rawRepliesCollection = gun.get('public-raw-replies');
+    const rawReplyPayload = replyMessage.toPayload();
     
-    // Handle flagging if needed
-    if (isInappropriate) {
-        await this.flagInappropriateContent({
-            itemType: 'reply',
-            itemId: replyMessage.id,
-            content,
-            author
+    try {
+        await SecureGunDB.write(rawRepliesCollection.get(replyMessage.id), rawReplyPayload, {
+            collection: 'public-raw-replies',
+            username: author,
+            validator: SecureGunDB.validateReply,
+            method: 'put',
+            addMetadata: true
         });
+        console.log(`Reply ${replyMessage.id} posted to 'public-raw-replies'.`);
+    } catch (error) {
+        console.error("Error writing reply to raw pool:", error);
+        throw error;
     }
     
+    incrementUserActions();
+    showNotification("Reply submitted to the network!", "success");
     return replyMessage;
 }
     
@@ -8392,7 +8399,7 @@ class MessageFactory {
         return flagMessage;
     }
     
-   static async createVote(options) {
+static async createVote(options) {
     const { itemType, itemId, voteType, author, parentId } = options;
     
     // Create vote message
@@ -8402,7 +8409,7 @@ class MessageFactory {
         itemId: itemId,
         author: author,
         parentId: parentId,
-        value: 1 // Default vote value
+        value: 1
     });
     
     // Generate a unique ID for the vote
@@ -8417,8 +8424,28 @@ class MessageFactory {
     // Sign the message
     await voteMessage.sign(currentUser);
     
-    // Submit for verification (now with ID)
-    await voteMessage.submitForVerification();
+    // CHANGE: Write to public raw pool instead of verification
+    const rawVotesCollection = gun.get('public-raw-votes');
+    const rawVotePayload = voteMessage.toPayload();
+    
+    try {
+        await SecureGunDB.write(rawVotesCollection.get(voteMessage.id), rawVotePayload, {
+            collection: 'public-raw-votes',
+            username: author,
+            validator: data => ({ isValid: true, message: "Vote data valid" }),
+            method: 'put',
+            addMetadata: true
+        });
+        console.log(`Vote ${voteMessage.id} posted to 'public-raw-votes'.`);
+        
+        // Record that user voted (locally)
+        const voteRef = `${itemType}-${itemId}`;
+        gun.get(`user-votes-${author}`).get(voteRef).put(true);
+        
+    } catch (error) {
+        console.error("Error writing vote to raw pool:", error);
+        throw error;
+    }
     
     return voteMessage;
 }
@@ -10103,25 +10130,27 @@ function loadThreads(forumId) {
             }
 
             // 2. Verify Signature
-     /*       let authorPubKey;
-           try {
-                authorPubKey = await new Promise((resolve, reject) => {
-                    users.get(message.author).get('pub').once(pub => {
-                        if (pub) resolve(pub);
-                        else reject(new Error(`Public key not found for ${message.author}`));
+            let authorPubKey = rawThreadData.authorPubKey; // Use stored key first
+            if (!authorPubKey) {
+                // Fallback to fetching from users if not stored
+                try {
+                    authorPubKey = await new Promise((resolve, reject) => {
+                        users.get(message.author).get('pub').once(pub => {
+                            if (pub) resolve(pub);
+                            else reject(new Error(`Public key not found for ${message.author}`));
+                        });
+                        setTimeout(() => reject(new Error(`Timeout fetching PK for ${message.author}`)), 3000);
                     });
-                    setTimeout(() => reject(new Error(`Timeout fetching PK for ${message.author}`)), 3000);
-                });
-            } catch (e) {
-                console.warn(`Thread ${messageId}: PK fetch error. ${e.message}. Ignoring.`);
-                return;
+                } catch (e) {
+                    console.warn(`Thread ${messageId}: PK fetch error. ${e.message}. Ignoring.`);
+                    return;
+                }
             }
 
             if (!(await message.verifySignature(authorPubKey))) {
                 console.warn(`Thread ${messageId}: Signature invalid. Ignoring.`);
                 return;
             }
-*/ //for now we skip
             // 3. Content Safety Check
             const isContentHarmful = await checkContent(message.content);
             if (isContentHarmful) {
@@ -10154,282 +10183,437 @@ function loadThreads(forumId) {
     });
 }            
         
-       function loadReplies(threadId) {
-            const repliesContainer = document.getElementById(`replies-${threadId}`);
+        function processVotesForItem(itemType, itemId) {
+            if (!window.clientVettedVotes) window.clientVettedVotes = new Set();
             
-            // First collect any pending replies
-            gun.get(`pending-replies`).map().once(async (replyData, replyId) => {
-                if (!replyData || replyData.parentId !== threadId) return;
-                
-                // Create pending reply UI
-                const pendingReplyEl = createPendingContentUI(replyData, replyId, 'reply');
-                repliesContainer.appendChild(pendingReplyEl);
-            });
+            const rawVotesCollection = gun.get('public-raw-votes');
+            const voteKey = `${itemType}-${itemId}`;
+            let upvotes = 0;
+            let downvotes = 0;
             
-            // then collect all replies
-            const allReplies = {};
-            const replyTree = {};
-            
-            // Create a function to recursively render replies
-            function renderReplies(parentId, container, depth) {
-                const MAX_RENDER_DEPTH = 10;
-                if (depth > MAX_RENDER_DEPTH) {
-                    console.warn(`Maximum reply render depth (${MAX_RENDER_DEPTH}) reached for parent ${parentId}`);
-                    return;
-                }
+            rawVotesCollection.map().on(async (rawVoteData, messageId) => {
+                if (!rawVoteData || typeof rawVoteData !== 'object') return;
                 
-                if (!replyTree[parentId]) return;
+                // Check if this vote is for the current item
+                if (rawVoteData.metadata?.itemType !== itemType || rawVoteData.metadata?.itemId !== itemId) return;
                 
-                replyTree[parentId].forEach(replyId => {
-                    const replyData = allReplies[replyId];
-                    if (!replyData) return;
+                // Skip if already processed
+                if (window.clientVettedVotes.has(messageId)) return;
+                
+                window.clientVettedVotes.add(messageId);
+                
+                try {
+                    const message = VoteMessage.fromPayload({ ...rawVoteData, id: messageId });
                     
-                    // Skip completely if the user is banned
-                    if (replyData.authorBanned) return;
-                    
-                    let replyEl = document.getElementById(`reply-${replyId}`);
-                    
-                    if (!replyEl) {
-                        replyEl = document.createElement('div');
-                        replyEl.className = 'reply';
-                        replyEl.id = `reply-${replyId}`;
-                        
-                        if (replyData.flagged) replyEl.classList.add('flagged');
-                        if (replyData.hidden) replyEl.classList.add('hidden');
-                        
-                        // Add indentation based on depth
-                        replyEl.style.marginLeft = (depth * 20) + 'px';
-                        
-                        // Add a left border to indicate nesting
-                        replyEl.style.borderLeft = '2px solid #d1d5db';
-                        
-                        container.appendChild(replyEl);
+                    // 1. Verify VDF Proof
+                    if (!(await message.verifyProof())) {
+                        console.warn(`Vote ${messageId}: VDF proof failed. Ignoring.`);
+                        return;
                     }
                     
-                    // Admin and moderator controls
-                    const modControls = (userProfile && (userProfile.role === 'admin' || userProfile.role === 'moderator')) ?
-                        `<div class="mod-controls">
-                            ${!replyData.hidden ? 
-                                `<button class="btn danger hide-reply" data-reply="${replyId}">
-                                    <i class="fas fa-eye-slash"></i> Hide
-                                </button>` : 
-                                `<button class="btn success unhide-reply" data-reply="${replyId}">
-                                    <i class="fas fa-eye"></i> Unhide
-                                </button>`
-                            }
-                            <button class="btn warning train-bad" data-content="${encodeURIComponent(replyData.content)}">
-                                <i class="fas fa-thumbs-down"></i> Train Bad
-                            </button>
-                            <button class="btn success train-good" data-content="${encodeURIComponent(replyData.content)}">
-                                <i class="fas fa-thumbs-up"></i> Train Good
-                            </button>
-                        </div>` : '';
-                    
-                    // Flag indicator
-                    const flagIndicator = replyData.flagged ? 
-                        `<span class="flag-badge">
-                            <i class="fas fa-flag"></i> Flagged
-                        </span>` : '';
-                    
-                    // User reputation
-                    let authorRep = null;
-                    users.get(replyData.author).once(userData => {
-                        if (userData && userData.reputation) {
-                            authorRep = calculateReputationScore(userData.reputation.upvotes, userData.reputation.downvotes);
-                        }
-                    });
-                    
-                    const repClass = authorRep ? 
-                        (authorRep > 0.7 ? 'high' : (authorRep > 0.4 ? 'medium' : 'low')) : '';
-                    
-                    const repBadge = authorRep ? 
-                        `<span class="user-reputation reputation-${repClass}">${Math.round(authorRep * 100)}%</span>` : '';
-                    
-                    const vdfProofBadge = replyData.vdfProof ? 
-                        `<span class="vdf-badge" title="Contains cryptographic proof of human authorship">
-                            <i class="fas fa-shield-alt"></i> Verified
-                        </span>` : '';
-
-                    replyEl.innerHTML = `
-                        <div class="reply-header">
-                            <div class="reply-meta">
-                                <span>
-                                    <i class="fas fa-user"></i> ${sanitizeHTML(replyData.author)} ${repBadge}
-                                </span>
-                                <span>
-                                    <i class="fas fa-clock"></i> ${formatDate(replyData.createdAt)}
-                                </span>
-                                ${vdfProofBadge}
-                                ${flagIndicator}
-                            </div>
-                            ${modControls}
-                        </div>
-                        <div class="reply-content">${sanitizeHTML(replyData.content)}</div>
-                        <div class="reply-actions">
-                            <div class="voting-buttons">
-                                <button class="vote-button upvote" data-reply="${replyId}" data-author="${sanitizeHTML(replyData.author)}">
-                                    <i class="fas fa-arrow-up"></i>
-                                </button>
-                                <span class="vote-count" id="reply-votes-${replyId}">${replyData.upvotes || 0}</span>
-                                <button class="vote-button downvote" data-reply="${replyId}" data-author="${sanitizeHTML(replyData.author)}">
-                                    <i class="fas fa-arrow-down"></i>
-                                </button>
-                            </div>
-                            ${!replyData.flagged && currentUser ? 
-                                `<button class="btn warning flag-reply" data-reply="${replyId}" data-author="${sanitizeHTML(replyData.author)}">
-                                    <i class="fas fa-flag"></i> Flag
-                                </button>` : ''
-                            }
-                            ${currentUser && (replyData.depth || 0) < 5 ? 
-                                `<button class="btn secondary reply-to-reply" data-thread="${threadId}" data-reply="${replyId}" data-depth="${replyData.depth || 0}">
-                                    <i class="fas fa-reply"></i> Reply
-                                </button>` : ''
-                            }
-                        </div>
-                        <div class="nested-replies" id="nested-replies-${replyId}">
-                            <!-- Nested replies will go here -->
-                        </div>
-                    `;
-                    
-                    // Add event listeners
-                    
-                    // Upvote button for replies
-                        const upvoteBtn = replyEl.querySelector('.upvote');
-                        if (upvoteBtn) {
-                            addCleanEventListener(upvoteBtn, 'click', async function() {
-                                await handleVote({
-                                    itemType: 'reply',
-                                    itemId: this.dataset.reply,
-                                    voteType: 'upvote',
-                                    author: this.dataset.author,
-                                    parentId: threadId,
-                                    button: this
-                                });
-                            });
-                        }
-                    
-               // Downvote button for replies
-                const downvoteBtn = replyEl.querySelector('.downvote');
-                if (downvoteBtn) {
-                    addCleanEventListener(downvoteBtn, 'click', async function() {
-                        await handleVote({
-                            itemType: 'reply',
-                            itemId: this.dataset.reply,
-                            voteType: 'downvote',
-                            author: this.dataset.author,
-                            parentId: threadId,
-                            button: this
-                        });
-                    });
-                }
-                    
-                    // Flag button
-                    const flagBtn = replyEl.querySelector('.flag-reply');
-                    if (flagBtn) {
-                        addCleanEventListener(flagBtn, 'click', function() {
-                            if (!currentUser) {
-                                showNotification("Please login to flag content", "warning");
-                                return;
-                            }
-                            
-                            const replyId = this.dataset.reply;
-                            const author = this.dataset.author;
-                            
-                            showFlagForm(replyId, 'reply', threadId, replyData.content, author);
-                        });
+                    // 2. Verify Signature
+                    const authorPubKey = rawVoteData.authorPubKey;
+                    if (!authorPubKey || !(await message.verifySignature(authorPubKey))) {
+                        console.warn(`Vote ${messageId}: Signature invalid. Ignoring.`);
+                        return;
                     }
                     
-                    // Reply to reply button
-                    const replyToReplyBtn = replyEl.querySelector('.reply-to-reply');
-                    if (replyToReplyBtn) {
-                        addCleanEventListener(replyToReplyBtn, 'click', function()  {
-                            const threadId = this.dataset.thread;
-                            const replyId = this.dataset.reply;
-                            const depth = parseInt(this.dataset.depth);
-                            
-                            // Show reply form for this reply
-                            showReplyForm(threadId, null, replyId, depth);
-                        });
+                    // Vote is valid - count it
+                    if (message.voteType === 'upvote') {
+                        upvotes++;
+                    } else {
+                        downvotes++;
                     }
                     
-                    // Moderator controls
-                    if (userProfile && (userProfile.role === 'admin' || userProfile.role === 'moderator')) {
-                        // Hide/Unhide reply
-                        const hideBtn = replyEl.querySelector(replyData.hidden ? '.unhide-reply' : '.hide-reply');
-                        if (hideBtn) {
-                            addCleanEventListener(hideBtn, 'click', async function() {
-                                const replyId = this.dataset.reply;
-                                
-                                // Create a mod action message
-                                const modAction = await MessageFactory.createModAction({
-                                    actionType: replyData.hidden ? 'unhide' : 'hide',
-                                    targetType: 'reply',
-                                    targetId: `${threadId}-${replyId}`,
-                                    moderator: currentUser.is.alias,
-                                    reason: replyData.hidden ? 'Unhidden by moderator' : 'Hidden by moderator'
-                                });
-                                
-                                // Apply the action
-                                await modAction.apply(gun);
-                                
-                                showNotification(`Reply ${replyData.hidden ? 'unhidden' : 'hidden'} successfully`, "success");
-                            });
-                        }
-                        
-                        // Train as bad content
-                        const trainBadBtn = replyEl.querySelector('.train-bad');
-                        if (trainBadBtn) {
-                          
-                            addCleanEventListener(trainBadBtn, 'click', function() {
-
-                                const content = decodeURIComponent(this.dataset.content);
-                                toxicityClassifier.train(content, 'bad');
-                                showNotification("Content trained as inappropriate", "success");
-                            });
-                        }
-                        
-                        // Train as good content
-                        const trainGoodBtn = replyEl.querySelector('.train-good');
-                        if (trainGoodBtn) {
-                            addCleanEventListener(trainGoodBtn, 'click', function() {
-
-                                const content = decodeURIComponent(this.dataset.content);
-                                toxicityClassifier.train(content, 'good');
-                                showNotification("Content trained as appropriate", "success");
-                            });
-                        }
+                    // Update the UI
+                    const voteCountEl = document.getElementById(`${itemType}-votes-${itemId}`);
+                    if (voteCountEl) {
+                        voteCountEl.textContent = upvotes - downvotes; // Or just upvotes, depending on your preference
                     }
                     
-                    // Recursively render child replies
-                    const nestedContainer = replyEl.querySelector(`#nested-replies-${replyId}`);
-                    renderReplies(replyId, nestedContainer, depth + 1);
-                    
-                });
-            }
-            
-            // First, collect all replies
-            gun.get(`replies-${threadId}`).map().on((replyData, replyId) => {
-                if (!replyData) return;
-                
-                // Store the reply in our collection
-                allReplies[replyId] = replyData;
-                
-                // Organize into tree structure
-                const parentId = replyData.parentReplyId || 'root';
-                if (!replyTree[parentId]) {
-                    replyTree[parentId] = [];
+                } catch (error) {
+                    console.error(`Error processing vote ${messageId}:`, error);
                 }
-                
-                // Only add if not already there
-                if (!replyTree[parentId].includes(replyId)) {
-                    replyTree[parentId].push(replyId);
-                }
-                
-                // Clear the container and render the top-level replies
-                repliesContainer.innerHTML = '';
-                renderReplies('root', repliesContainer, 0);
             });
         }
+        
+        
+    function loadReplies(threadId) {
+    const repliesContainer = document.getElementById(`replies-${threadId}`);
+    if (!repliesContainer) return;
+    
+    if (!window.clientVettedReplies) window.clientVettedReplies = new Set();
+    
+    const rawRepliesCollection = gun.get('public-raw-replies');
+    
+    rawRepliesCollection.map().on(async (rawReplyData, messageId) => {
+        if (!rawReplyData || typeof rawReplyData !== 'object') return;
+        
+        // Check if this reply belongs to the current thread
+        if (rawReplyData.parentId !== threadId) return;
+        
+        // Skip if already vetted
+        if (window.clientVettedReplies.has(messageId)) return;
+        
+        window.clientVettedReplies.add(messageId);
+        
+        try {
+            const message = ReplyMessage.fromPayload({ ...rawReplyData, id: messageId });
+            
+            // 1. Verify VDF Proof
+            if (!(await message.verifyProof())) {
+                console.warn(`Reply ${messageId}: VDF proof failed. Ignoring.`);
+                return;
+            }
+            
+            // 2. Verify Signature using stored public key
+            const authorPubKey = rawReplyData.authorPubKey;
+            if (!authorPubKey || !(await message.verifySignature(authorPubKey))) {
+                console.warn(`Reply ${messageId}: Signature invalid. Ignoring.`);
+                return;
+            }
+            
+            // 3. Content Safety Check
+            const isContentHarmful = await checkContent(message.content);
+            if (isContentHarmful) {
+                console.warn(`Reply ${messageId}: Content flagged. Ignoring.`);
+                return;
+            }
+            
+            // All checks passed - render the reply
+            if (!document.getElementById(`reply-${messageId}`)) {
+                createAndRenderVerifiedReplyElement(rawReplyData, messageId, threadId, repliesContainer);
+            }
+            
+        } catch (error) {
+            console.error(`Error vetting reply ${messageId}:`, error);
+        }
+    });
+    
+    // Also process votes for this thread
+    processVotesForItem('thread', threadId);
+}
+
+// Helper function to render verified reply
+function createAndRenderVerifiedReplyElement(replyData, replyId, threadId, container) {
+    // Skip if element already exists
+    if (document.getElementById(`reply-${replyId}`)) {
+        return;
+    }
+    
+    const replyEl = document.createElement('div');
+    replyEl.className = 'reply';
+    replyEl.id = `reply-${replyId}`;
+    
+    // Add classes based on reply state
+    if (replyData.flagged || (replyData.metadata && replyData.metadata.flagged)) {
+        replyEl.classList.add('flagged');
+    }
+    if (replyData.hidden || (replyData.metadata && replyData.metadata.hidden)) {
+        replyEl.classList.add('hidden');
+    }
+    if (replyData.authorBanned || (replyData.metadata && replyData.metadata.authorBanned)) {
+        replyEl.classList.add('hidden');
+        console.log(`Reply ${replyId} by banned author ${replyData.author} will be hidden.`);
+    }
+    
+    // Get depth for indentation
+    const depth = replyData.depth || replyData.metadata?.depth || 0;
+    
+    // Add indentation based on depth
+    replyEl.style.marginLeft = (depth * 20) + 'px';
+    
+    // Add a left border to indicate nesting
+    replyEl.style.borderLeft = '2px solid #d1d5db';
+    
+    // Extract data with fallbacks
+    const author = replyData.author || "Unknown Author";
+    const content = replyData.content || "";
+    const createdAt = (replyData._meta && replyData._meta.createdAt) ? replyData._meta.createdAt : 
+                      (replyData.createdAt || replyData.timestamp || Date.now());
+    const upvotes = replyData.upvotes || replyData.metadata?.upvotes || 0;
+    const downvotes = replyData.downvotes || replyData.metadata?.downvotes || 0;
+    const parentReplyId = replyData.parentReplyId || replyData.metadata?.parentReplyId || null;
+    
+    // VDF proof badge
+    const vdfProofString = replyData.vdfProof || (replyData.metadata && replyData.metadata.vdfProof);
+    const vdfBadge = vdfProofString
+        ? `<span class="vdf-badge" title="Cryptographic proof of human authorship"><i class="fas fa-shield-alt"></i> Human Verified</span>`
+        : '';
+    
+    // Flag indicator
+    let flagIndicator = '';
+    if (replyData.flagged || (replyData.metadata && replyData.metadata.flagged)) {
+        const reason = replyData.metadata?.flagReason || 
+                      (replyData.metadata?.clientSideAuthorWarning ? "Author client warning" : "Flagged");
+        flagIndicator = `<span class="flag-badge"><i class="fas fa-flag"></i> ${sanitizeHTML(reason.substring(0,30))}</span>`;
+    }
+    
+    // Admin and moderator controls
+    const modControls = (currentUser && userProfile && (userProfile.role === 'admin' || userProfile.role === 'moderator')) ?
+        `<div class="mod-controls">
+            ${!replyData.hidden ? 
+                `<button class="btn danger hide-reply" data-reply="${replyId}" data-thread="${threadId}">
+                    <i class="fas fa-eye-slash"></i> Hide
+                </button>` : 
+                `<button class="btn success unhide-reply" data-reply="${replyId}" data-thread="${threadId}">
+                    <i class="fas fa-eye"></i> Unhide
+                </button>`
+            }
+            <button class="btn warning train-bad" data-content="${encodeURIComponent(content)}">
+                <i class="fas fa-thumbs-down"></i> Train Bad
+            </button>
+            <button class="btn success train-good" data-content="${encodeURIComponent(content)}">
+                <i class="fas fa-thumbs-up"></i> Train Good
+            </button>
+        </div>` : '';
+    
+    // User reputation badge (we'll fetch this async)
+    const repBadge = `<span class="user-reputation" id="rep-${replyId}-${author}"></span>`;
+    
+    // Build the reply HTML
+    replyEl.innerHTML = `
+        <div class="reply-header">
+            <div class="reply-meta">
+                <span>
+                    <i class="fas fa-user"></i> ${sanitizeHTML(author)} ${repBadge}
+                </span>
+                <span>
+                    <i class="fas fa-clock"></i> ${formatDate(createdAt)}
+                </span>
+                ${vdfBadge}
+                ${flagIndicator}
+            </div>
+            ${modControls}
+        </div>
+        <div class="reply-content">${sanitizeHTML(content)}</div>
+        <div class="reply-actions">
+            <div class="voting-buttons">
+                <button class="vote-button upvote" data-reply="${replyId}" data-thread="${threadId}" data-author="${sanitizeHTML(author)}">
+                    <i class="fas fa-arrow-up"></i>
+                </button>
+                <span class="vote-count" id="reply-votes-${replyId}">${upvotes - downvotes}</span>
+                <button class="vote-button downvote" data-reply="${replyId}" data-thread="${threadId}" data-author="${sanitizeHTML(author)}">
+                    <i class="fas fa-arrow-down"></i>
+                </button>
+            </div>
+            ${(!replyData.flagged && currentUser) ? 
+                `<button class="btn warning flag-reply" data-reply="${replyId}" data-thread="${threadId}" data-author="${sanitizeHTML(author)}" data-content="${encodeURIComponent(content)}">
+                    <i class="fas fa-flag"></i> Flag
+                </button>` : ''
+            }
+            ${(currentUser && depth < 5) ? 
+                `<button class="btn secondary reply-to-reply" data-thread="${threadId}" data-reply="${replyId}" data-depth="${depth}">
+                    <i class="fas fa-reply"></i> Reply
+                </button>` : ''
+            }
+        </div>
+        <div class="nested-replies" id="nested-replies-${replyId}">
+            <!-- Nested replies will go here -->
+        </div>
+    `;
+    
+    // Add to container
+    if (parentReplyId) {
+        // This is a nested reply - add it to the parent's nested container
+        const parentContainer = document.getElementById(`nested-replies-${parentReplyId}`);
+        if (parentContainer) {
+            parentContainer.appendChild(replyEl);
+        } else {
+            // Parent not found yet, add to main container
+            container.appendChild(replyEl);
+        }
+    } else {
+        // Top-level reply
+        container.appendChild(replyEl);
+    }
+    
+    // Fetch and display user reputation asynchronously
+    users.get(author).once(userData => {
+        if (userData && userData.reputation) {
+            const repScore = calculateReputationScore(
+                userData.reputation.upvotes || 0, 
+                userData.reputation.downvotes || 0
+            );
+            const repClass = repScore > 0.7 ? 'high' : (repScore > 0.4 ? 'medium' : 'low');
+            const repEl = document.getElementById(`rep-${replyId}-${author}`);
+            if (repEl) {
+                repEl.className = `user-reputation reputation-${repClass}`;
+                repEl.textContent = `${Math.round(repScore * 100)}%`;
+            }
+        }
+    });
+    
+    // Add event listeners
+    
+    // Upvote button
+    const upvoteBtn = replyEl.querySelector('.upvote');
+    if (upvoteBtn) {
+        addCleanEventListener(upvoteBtn, 'click', async function() {
+            await handleVote({
+                itemType: 'reply',
+                itemId: `${threadId}-${replyId}`,
+                voteType: 'upvote',
+                author: currentUser.is.alias,
+                parentId: threadId,
+                button: this
+            });
+        });
+    }
+    
+    // Downvote button
+    const downvoteBtn = replyEl.querySelector('.downvote');
+    if (downvoteBtn) {
+        addCleanEventListener(downvoteBtn, 'click', async function() {
+            await handleVote({
+                itemType: 'reply',
+                itemId: `${threadId}-${replyId}`,
+                voteType: 'downvote',
+                author: currentUser.is.alias,
+                parentId: threadId,
+                button: this
+            });
+        });
+    }
+    
+    // Flag button
+    const flagBtn = replyEl.querySelector('.flag-reply');
+    if (flagBtn) {
+        addCleanEventListener(flagBtn, 'click', function() {
+            if (!currentUser) {
+                showNotification("Please login to flag content", "warning");
+                return;
+            }
+            showFlagForm(replyId, 'reply', threadId, decodeURIComponent(this.dataset.content), this.dataset.author);
+        });
+    }
+    
+    // Reply to reply button
+    const replyToReplyBtn = replyEl.querySelector('.reply-to-reply');
+    if (replyToReplyBtn) {
+        addCleanEventListener(replyToReplyBtn, 'click', function() {
+            const threadId = this.dataset.thread;
+            const replyId = this.dataset.reply;
+            const depth = parseInt(this.dataset.depth);
+            
+            showReplyForm(threadId, null, replyId, depth);
+        });
+    }
+    
+    // Moderator controls
+    if (userProfile && (userProfile.role === 'admin' || userProfile.role === 'moderator')) {
+        // Hide/Unhide reply
+        const hideBtn = replyEl.querySelector(replyData.hidden ? '.unhide-reply' : '.hide-reply');
+        if (hideBtn) {
+            addCleanEventListener(hideBtn, 'click', async function() {
+                const replyId = this.dataset.reply;
+                const threadId = this.dataset.thread;
+                
+                // Update the raw reply data
+                const rawRepliesCollection = gun.get('public-raw-replies');
+                rawRepliesCollection.get(replyId).get('hidden').put(!replyData.hidden);
+                
+                showNotification(`Reply ${replyData.hidden ? 'unhidden' : 'hidden'} locally`, "success");
+                
+                // Update UI
+                replyEl.classList.toggle('hidden');
+                this.innerHTML = replyData.hidden ? 
+                    '<i class="fas fa-eye-slash"></i> Hide' : 
+                    '<i class="fas fa-eye"></i> Unhide';
+            });
+        }
+        
+        // Train as bad content
+        const trainBadBtn = replyEl.querySelector('.train-bad');
+        if (trainBadBtn) {
+            addCleanEventListener(trainBadBtn, 'click', function() {
+                const content = decodeURIComponent(this.dataset.content);
+                toxicityClassifier.train(content, 'bad');
+                showNotification("Content trained as inappropriate", "success");
+            });
+        }
+        
+        // Train as good content
+        const trainGoodBtn = replyEl.querySelector('.train-good');
+        if (trainGoodBtn) {
+            addCleanEventListener(trainGoodBtn, 'click', function() {
+                const content = decodeURIComponent(this.dataset.content);
+                toxicityClassifier.train(content, 'good');
+                showNotification("Content trained as appropriate", "success");
+            });
+        }
+    }
+    
+    // Process votes for this reply
+    processVotesForItem('reply', `${threadId}-${replyId}`);
+    
+    // Load nested replies if this reply has children
+    loadNestedReplies(replyId, threadId);
+}
+
+// Helper function to load nested replies
+function loadNestedReplies(parentReplyId, threadId) {
+    const rawRepliesCollection = gun.get('public-raw-replies');
+    
+    rawRepliesCollection.map().on(async (rawReplyData, messageId) => {
+        if (!rawReplyData || typeof rawReplyData !== 'object') return;
+        
+        // Check if this is a child of the current reply
+        if (rawReplyData.parentId !== threadId || 
+            (rawReplyData.parentReplyId || rawReplyData.metadata?.parentReplyId) !== parentReplyId) {
+            return;
+        }
+        
+        // Skip if already processed
+        if (window.clientVettedReplies.has(messageId)) return;
+        
+        window.clientVettedReplies.add(messageId);
+        
+        try {
+            const message = ReplyMessage.fromPayload({ ...rawReplyData, id: messageId });
+            
+            // 1. Verify VDF Proof
+            if (!(await message.verifyProof())) {
+                console.warn(`Nested reply ${messageId}: VDF proof failed. Ignoring.`);
+                return;
+            }
+            
+            // 2. Verify Signature
+            const authorPubKey = rawReplyData.authorPubKey;
+            if (!authorPubKey || !(await message.verifySignature(authorPubKey))) {
+                console.warn(`Nested reply ${messageId}: Signature invalid. Ignoring.`);
+                return;
+            }
+            
+            // 3. Content Safety Check
+            const isContentHarmful = await checkContent(message.content);
+            if (isContentHarmful) {
+                console.warn(`Nested reply ${messageId}: Content flagged. Ignoring.`);
+                return;
+            }
+            
+            // All checks passed - render the nested reply
+            const nestedContainer = document.getElementById(`nested-replies-${parentReplyId}`);
+            if (nestedContainer && !document.getElementById(`reply-${messageId}`)) {
+                createAndRenderVerifiedReplyElement(rawReplyData, messageId, threadId, nestedContainer);
+            }
+            
+        } catch (error) {
+            console.error(`Error vetting nested reply ${messageId}:`, error);
+        }
+    });
+}
+        
+        
+        
+       
+        
+        
+        
+        
+        
+        
+        
         
         // Show form to flag content
         function showFlagForm(id, type, parentId, content, author) {
@@ -10527,7 +10711,6 @@ function loadThreads(forumId) {
         
         // === Creating Content ===
         
-      // Replace showNewThreadForm with this version:
         function showNewThreadForm(defaultForumId = null) {
             if (!currentUser) {
                 showNotification("Please login to create a new thread", "warning");
