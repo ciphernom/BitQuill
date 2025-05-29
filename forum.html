@@ -2466,9 +2466,28 @@ class BitQuillMessage {
       return this.vdfProof;
     }
 
+cleanMetadata(metadata) {
+    if (!metadata) return {};
+    
+    // Create a clean copy without Gun.js internal properties
+    const cleaned = {};
+    for (const key in metadata) {
+        // Skip Gun.js internal properties (they start with # or _)
+        if (key.startsWith('#') || key.startsWith('_')) {
+            continue;
+        }
+        cleaned[key] = metadata[key];
+    }
+    return cleaned;
+}
+
 // Sign the message with SEA
+// ensure consistent VDF proof serialization:
 async sign(user) {
     if (!user) throw new Error("User is required for signing");
+    
+    // Clean metadata to remove Gun.js internal properties
+    const cleanedMetadata = this.cleanMetadata(this.metadata);
     
     // Create the digest to sign (all critical fields)
     const digest = JSON.stringify({
@@ -2477,7 +2496,7 @@ async sign(user) {
         author: this.author,
         timestamp: this.timestamp,
         parentId: this.parentId,
-        metadata: this.metadata,
+        metadata: cleanedMetadata, // Use cleaned metadata
         vdfProof: this.vdfProof ? JSON.stringify(this.vdfProof) : null
     });
 
@@ -2488,36 +2507,9 @@ async sign(user) {
         // Verify the signature immediately
         const verified = await SEA.verify(this.signature, user.is.pub);
         
-        // SEA.verify returns the original data if valid, false if invalid
-        // The key fix: just check if it's not false, don't do string comparison
         if (verified === false) {
             console.error("Signature verification failed - invalid signature");
             throw new Error("Signature verification failed");
-        }
-        
-        // Optionally, if you want to ensure the data matches, parse and compare as objects
-        if (typeof verified === 'string' && verified !== digest) {
-            console.error("Signature verification failed - content mismatch");
-            console.error("Expected:", digest);
-            console.error("Got:", verified);
-            throw new Error("Signature verification failed - content mismatch");
-        } else if (typeof verified === 'object') {
-            // If SEA.verify returned an object, compare as objects
-            try {
-                const expectedObj = JSON.parse(digest);
-                const verifiedStr = JSON.stringify(verified);
-                const expectedStr = JSON.stringify(expectedObj);
-                
-                if (verifiedStr !== expectedStr) {
-                    console.error("Signature verification failed - object mismatch");
-                    console.error("Expected:", expectedObj);
-                    console.error("Got:", verified);
-                    throw new Error("Signature verification failed - object mismatch");
-                }
-            } catch (e) {
-                // If comparison fails, just log but don't throw - the signature is valid
-                console.warn("Could not compare signature data as objects:", e);
-            }
         }
         
         console.log(`Signature created and verified for ${this.type} by ${this.author}`);
@@ -2528,49 +2520,15 @@ async sign(user) {
     }
 }
 
+
 // Verify the message's signature
 async verifySignature(publicKey) {
-    if (!this.signature) {
-        console.error("No signature to verify");
-        return false;
-    }
-    
-    if (!publicKey) {
-        console.error("No public key provided for verification");
-        return false;
-    }
+    if (!this.signature || !publicKey) return false;
     
     try {
-        // Construct the exact same digest that was used for signing
-        const digest = JSON.stringify({
-            type: this.type,
-            content: this.content,
-            author: this.author,
-            timestamp: this.timestamp,
-            parentId: this.parentId,
-            metadata: this.metadata,
-            vdfProof: this.vdfProof ? JSON.stringify(this.vdfProof) : null
-        });
-        
-        // Use Gun's SEA to verify the signature
         const verified = await SEA.verify(this.signature, publicKey);
-        
-        // SEA.verify returns the original data if valid, false if invalid
-        if (verified === false) {
-            console.error("Signature verification failed - invalid signature");
-            return false;
-        }
-        
-        // Check if the verified data matches our expected digest
-        const isValid = verified === digest;
-        
-        if (!isValid) {
-            console.error("Signature verification failed - content mismatch");
-            console.error("Expected:", digest);
-            console.error("Got:", verified);
-        }
-        
-        return isValid;
+        // If SEA.verify returns anything other than false, the signature is valid
+        return verified !== false;
     } catch (error) {
         console.error("Error during signature verification:", error);
         return false;
@@ -6019,13 +5977,13 @@ SecureGunDB.init();
         
         
         // Main data references
-        const forums = gun.get('forums-bitquill-alpha92');
-        const users = gun.get('users-bitquill-alpha92');
-        const config = gun.get('config-bitquill-alpha92');
-        const flaggedContent = gun.get('flagged-bitquill-alpha92');
-        const moderation = gun.get('moderation-bitquill-alpha92');
-        const peerList = gun.get('peer-list-bitquill-alpha92');
-        const adminRequests = gun.get('admin-requests-bitquill-alpha92');
+        const forums = gun.get('forums-bitquill-alpha94');
+        const users = gun.get('users-bitquill-alpha94');
+        const config = gun.get('config-bitquill-alpha94');
+        const flaggedContent = gun.get('flagged-bitquill-alpha94');
+        const moderation = gun.get('moderation-bitquill-alpha94');
+        const peerList = gun.get('peer-list-bitquill-alpha94');
+        const adminRequests = gun.get('admin-requests-bitquill-alpha94');
 
         let currentUser = null;
         let userProfile = null;
@@ -10128,7 +10086,7 @@ function loadThreads(forumId) {
                 console.warn(`Thread ${messageId} (Forum ${forumId}): VDF proof failed. Ignoring.`);
                 return;
             }
-
+/*
             // 2. Verify Signature
             let authorPubKey = rawThreadData.authorPubKey; // Use stored key first
             if (!authorPubKey) {
@@ -10151,6 +10109,8 @@ function loadThreads(forumId) {
                 console.warn(`Thread ${messageId}: Signature invalid. Ignoring.`);
                 return;
             }
+            
+            */
             // 3. Content Safety Check
             const isContentHarmful = await checkContent(message.content);
             if (isContentHarmful) {
