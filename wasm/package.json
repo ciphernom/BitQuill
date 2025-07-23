@@ -1,0 +1,15 @@
+{
+  "name": "vdf-wasm",
+  "type": "module",
+  "version": "0.1.0",
+  "files": [
+    "vdf_wasm_bg.wasm",
+    "vdf_wasm.js",
+    "vdf_wasm.d.ts"
+  ],
+  "main": "vdf_wasm.js",
+  "types": "vdf_wasm.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}
