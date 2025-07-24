@@ -155,3 +155,70 @@
   
 }
 
+/* Add these new styles to the end of modern-styles.css */
+.header-left {
+  flex: 1;
+  min-width: 0;
+}
+.document-title-input {
+  background: none;
+  border: none;
+  color: var(--text-primary);
+  font-size: 18px;
+  font-weight: 500;
+  padding: 4px 8px;
+  border-radius: 4px;
+  transition: var(--transition-fast);
+  width: 100%;
+  max-width: 400px;
+}
+.document-title-input:hover {
+  background: var(--bg-tertiary);
+}
+.document-title-input:focus {
+  outline: none;
+  background: var(--bg-tertiary);
+  box-shadow: 0 0 0 2px var(--primary-color);
+}
+.file-browser-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px;
+  border-radius: 6px;
+  margin-bottom: 8px;
+  background: var(--bg-tertiary);
+  cursor: pointer;
+}
+.file-browser-item:hover {
+  background: var(--bg-primary);
+}
+.file-browser-title {
+  font-weight: 500;
+}
+.file-browser-timestamp {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-top: 4px;
+}
+.file-browser-actions button {
+  margin-left: 8px;
+}
+.btn-secondary {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+.btn-danger {
+  background: #ff4444;
+  color: white;
+}
+.btn-icon {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--text-secondary);
+  padding: 4px;
+}
+.btn-icon:hover {
+  color: var(--primary-color);
+}

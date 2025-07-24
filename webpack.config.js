@@ -1,27 +1,53 @@
 const path = require('path');
 const CopyPlugin = require('copy-webpack-plugin');
+const HtmlWebpackPlugin = require('html-webpack-plugin');
 
 module.exports = {
-  // 1. Tell webpack where to start
+  // Tell webpack where to start
   entry: './main.js',
 
-  // 2. Tell webpack where to put the final bundled files
+  // Tell webpack where to put the final bundled files
   output: {
     path: path.resolve(__dirname, 'dist'),
     filename: 'main.js',
-    workerPublicPath: '/',
+    // for GitHub pages deployment.
+    publicPath: "/BitQuill/", 
   },
 
-  // 3. Configure the development server
+  // Configure the development server
   devServer: {
-    // Serve files from the project root. This is simpler.
+    // This tells the server to serve the files that webpack builds
     static: {
-      directory: path.join(__dirname, '.'),
+      directory: path.join(__dirname, 'dist'),
     },
     port: 8080,
+    // This helps the server handle routing for single-page apps
+    historyApiFallback: true,
   },
 
-  // 4. Set the mode and enable WASM support
+  module: {
+    rules: [
+      {
+        test: /\.css$/i,
+        use: ['style-loader', 'css-loader'],
+      },
+    ],
+  },
+  
+  plugins: [
+    new CopyPlugin({
+      patterns: [
+        { from: "modern-styles.css", to: "modern-styles.css" },
+        { from: "wasm", to: "wasm" }
+      ],
+    }),
+    new HtmlWebpackPlugin({
+        // This tells the plugin to use your existing index.html as a template
+        template: 'index.html' 
+    })
+  ],
+  
+  // Set the mode and enable WASM support
   mode: 'development',
   experiments: {
     asyncWebAssembly: true,

@@ -5,23 +5,17 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>BitQuill - Temporal Document Editor</title>
   
-  <!-- Modern fonts -->
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   
-  <!-- Quill -->
-  <link href="https://cdn.quilljs.com/1.3.6/quill.snow.css" rel="stylesheet">
-  
-  <!-- Our modern styles -->
+ 
   <link rel="stylesheet" href="modern-styles.css"> 
 </head>
 <body>
-  <!-- Modern app container -->
   <div class="app-container">
-    <!-- Header bar -->
     <header class="header-bar">
       <div class="header-left">
         <h1 class="app-title">BitQuill</h1>
-        <span class="document-status" id="document-status">Untitled Document</span>
+        <input type="text" class="document-title-input" id="document-title" value="Untitled Document">
       </div>
       <div class="header-right">
         <div class="header-timer" id="header-timer">
@@ -34,15 +28,12 @@
       </div>
     </header>
 
-
-    <!-- Main editor area -->
     <main class="editor-wrapper">
       <div class="editor-container">
         <div id="editor"></div>
       </div>
     </main>
 
-    <!-- Modern status bar -->
     <footer class="status-bar" id="status-bar">
       <div class="status-left">
         <span class="status-item" id="word-count">0 words</span>
@@ -58,39 +49,37 @@
       </div>
     </footer>
 
-    <!-- Floating action buttons -->
     <div class="fab-container">
-      <button class="fab fab-secondary" id="load-btn" title="Load & Verify">
+      <div style="background: var(--bg-tertiary); padding: 8px; border-radius: 16px; display: flex; flex-direction: column; gap: 8px; margin-bottom: 16px;">
+        <button class="fab fab-secondary" id="generate-keys-btn" title="Generate New Signing Keys" style="width: 40px; height: 40px; position: static;">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"></path></svg>
+        </button>
+      </div>
+
+      <button class="fab fab-secondary" id="new-doc-btn" title="New Document">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="12" y1="18" x2="12" y2="12"></line><line x1="9" y1="15" x2="15" y2="15"></line></svg>
+      </button>
+      <button class="fab fab-secondary" id="browse-local-btn" title="My Documents">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
+      </button>
+      <button class="fab fab-secondary" id="import-btn" title="Import File">
         <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
           <polyline points="7 10 12 15 17 10"></polyline>
           <line x1="12" y1="15" x2="12" y2="3"></line>
         </svg>
       </button>
-
-
-  <button class="fab fab-secondary" id="verify-live-btn" title="Verify Current Document">
-    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-      <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
-      <path d="m9 12 2 2 4-4"></path>
-    </svg>
-  </button>
-
-
-
-      <button class="fab fab-primary" id="save-btn" title="Save Document">
-        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path>
-          <polyline points="17 21 17 13 7 13 7 21"></polyline>
-          <polyline points="7 3 7 8 15 8"></polyline>
+      <button class="fab fab-secondary" id="verify-live-btn" title="Verify Current Document">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+          <path d="m9 12 2 2 4-4"></path>
         </svg>
+      </button>
+      <button class="fab fab-primary" id="save-btn" title="Sign and Save">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline></svg>
       </button>
     </div>
 
-
-
-
-    <!-- Proof panel (hidden by default) -->
     <div class="proof-panel" id="proof-panel">
       <div class="proof-panel-header">
         <h3>Proof Chain</h3>
@@ -100,14 +89,12 @@
     </div>
   </div>
 
-  <!-- Hidden file input -->
   <input type="file" id="file-input" accept=".json" style="display: none;">
 
-  <!-- Toast container -->
   <div class="toast-container" id="toast-container"></div>
 
-  <!-- Modal container -->
   <div class="modal-backdrop" id="modal-backdrop"></div>
+  
   <div class="modal" id="verification-modal">
     <div class="modal-header">
       <h2>Document Verification</h2>
@@ -126,15 +113,23 @@
         <p class="verification-status" id="verification-status">Initializing...</p>
       </div>
       <div class="verification-results" id="verification-results" style="display: none;">
-        <!-- Results will be inserted here -->
-      </div>
+        </div>
     </div>
     <div class="modal-footer">
-      <button class="btn btn-primary" id="modal-close">Close</button>
+      <button class="btn btn-primary" id="export-pdf-btn" style="display: none;">Export to Verified PDF</button>
+      <button class="btn btn-secondary" id="modal-close">Close</button>
     </div>
   </div>
 
-  <script src="https://cdn.quilljs.com/1.3.6/quill.js"></script>
-  <script src="./main.js" type="module"></script>
+  <div class="modal" id="file-browser-modal">
+    <div class="modal-header">
+      <h2>My Documents</h2>
+    </div>
+    <div class="modal-body" id="file-browser-list">
+      </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" id="file-browser-close">Close</button>
+    </div>
+  </div>
 </body>
 </html>
