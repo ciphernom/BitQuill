@@ -62,7 +62,7 @@ To run this project locally, you will need to have [Node.js](https://nodejs.org/
     npm install
     ```
 
-3. ** Build the Rust:**
+3. **Build the Rust:**
    ```bash
    cd vdf-wasm
    wasm-pack build --target web --out-dir ../wasm --release
