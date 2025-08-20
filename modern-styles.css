@@ -47,10 +47,10 @@
   .epoch-number { font-size: 16px; font-weight: 500; color: var(--primary-color); }
 
   /* Editor */
-  .editor-wrapper { flex: 1; display: flex; justify-content: center; padding: 24px; overflow-y: auto; background: var(--bg-primary); }
+  .editor-wrapper { flex: 1; display: flex; justify-content: center; padding: 24px; background: var(--bg-primary); }
   .editor-container { width: 100%; max-width: 800px; background: #ffffff; border-radius: 8px; box-shadow: var(--shadow-lg); overflow: hidden; }
   #editor { min-height: 500px; font-size: 16px; line-height: 1.6; }
-  .ql-toolbar.ql-snow { border: none; border-bottom: 1px solid #e0e0e0; background: #fafafa; padding: 12px; }
+  .ql-toolbar.ql-snow { border: none; border-bottom: 1px solid #e0e0e0; background: #fafafa; padding: 12px; position: sticky;  top: 0;   z-index: 1;   }
   .ql-container.ql-snow { border: none; }
   .ql-editor { padding: 32px; font-family: 'Inter', sans-serif; color: var(--bg-primary); }
 
