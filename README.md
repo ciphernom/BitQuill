@@ -47,36 +47,52 @@ To ensure no one knows the factors, BitQuill uses the **RSA-2048 modulus from th
 -   **Authorship Score**: Gain insights into the writing process with a score that analyzes human-like characteristics.
 -   **Modern Text Editor**: Built with the reliable and feature-rich Quill.js editor.
 
-## Running locally
+## Prerequisites
 
-To run this project locally, you will need to have [Node.js](https://nodejs.org/) and `npm` installed.
+Before you begin, ensure you have the following installed on your system.
 
-1.  **Clone the repository:**
-    ```bash
-    git clone https://github.com/ciphernom/BitQuill.git
-    cd BitQuill
-    ```
+  * **Node.js and npm**: Required for managing project dependencies and running the local server. You can download them from [nodejs.org](https://nodejs.org/).
 
-2.  **Install dependencies:**
-    ```bash
-    npm install
-    ```
+  * **Git**: Required for cloning the repository. You can download it from [git-scm.com](https://git-scm.com/).
 
-3. **Build the Rust:**
-   ```bash
-   cd vdf-wasm
-   wasm-pack build --target web --out-dir ../wasm --release
-   
-4.  **Build the Distribution:**
-    ```bash
-    cd ..
-    npm run build
-    ```
-5. **Start the server**
-    ```bash
-    npm run start
-    ```
-    This will open the application in your browser, usually at `http://localhost:8080`.
+  * **Rust & wasm-pack**: The core cryptography is written in Rust and compiled to WebAssembly. The easiest way to set this up is with the following commands:
+
+    1.  **Install Rust** using `rustup` (the official toolchain installer):
+
+        ```bash
+        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+        ```
+        *(Follow the on-screen instructions to complete the installation.)*
+
+
+    2.  **Install `wasm-pack`** to build the WebAssembly module:
+
+        ```bash
+        cargo install wasm-pack
+        ```
+
+-----
+
+## Running Locally
+
+Once the prerequisites are in place, you can get the project running with the following commands.
+
+```bash
+# 1. Clone the repository and enter the directory
+git clone https://github.com/ciphernom/BitQuill.git
+cd BitQuill
+
+# 2. Install the JavaScript dependencies
+npm install
+
+# 3. Compile the Rust/WASM module and build the application
+(cd vdf-wasm && wasm-pack build --target web --out-dir ../wasm --release) && npm run build
+
+# 4. Start the local development server
+npm run start
+```
+
+The application will now be running on your local machine, typically at **`http://localhost:8080`**.
    
 
 ## Technology Stack
