@@ -70,11 +70,11 @@ To run this project locally, you will need to have [Node.js](https://nodejs.org/
 4.  **Build the Distribution:**
     ```bash
     cd ..
-    webpack --mode=production
+    npm run build
     ```
 5. **Start the server**
     ```bash
-    webpack-dev-server
+    npm run start
     ```
     This will open the application in your browser, usually at `http://localhost:8080`.
    
