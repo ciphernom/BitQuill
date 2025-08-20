@@ -47,7 +47,7 @@ To ensure no one knows the factors, BitQuill uses the **RSA-2048 modulus from th
 -   **Authorship Score**: Gain insights into the writing process with a score that analyzes human-like characteristics.
 -   **Modern Text Editor**: Built with the reliable and feature-rich Quill.js editor.
 
-## Getting Started (For Developers)
+## Running locally
 
 To run this project locally, you will need to have [Node.js](https://nodejs.org/) and `npm` installed.
 
