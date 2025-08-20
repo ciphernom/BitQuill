@@ -62,27 +62,22 @@ To run this project locally, you will need to have [Node.js](https://nodejs.org/
     npm install
     ```
 
-3.  **Start the development server:**
+3. ** Build the Rust:**
+   ```bash
+   cd vdf-wasm
+   wasm-pack build --target web --out-dir ../wasm --release
+   
+4.  **Build the Distribution:**
     ```bash
-    npm start
+    cd ..
+    webpack --mode=production
+    ```
+5. Start the server
+    ```bash
+    webpack-dev-server
     ```
     This will open the application in your browser, usually at `http://localhost:8080`.
-
-## Deployment
-
-This project is configured for easy deployment to GitHub Pages.
-
-1.  **Build the project:**
-    ```bash
-    npm run build
-    ```
-    This bundles the application into the `/dist` folder.
-
-2.  **Deploy to GitHub Pages:**
-    ```bash
-    npm run deploy
-    ```
-    This script will run the build and then push the contents of the `/dist` folder to the `gh-pages` branch of your repository.
+   
 
 ## Technology Stack
 
