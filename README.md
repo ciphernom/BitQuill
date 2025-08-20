@@ -72,7 +72,7 @@ To run this project locally, you will need to have [Node.js](https://nodejs.org/
     cd ..
     webpack --mode=production
     ```
-5. Start the server
+5. **Start the server**
     ```bash
     webpack-dev-server
     ```
