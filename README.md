@@ -53,7 +53,7 @@ To run this project locally, you will need to have [Node.js](https://nodejs.org/
 
 1.  **Clone the repository:**
     ```bash
-    git clone [https://github.com/ciphernom/BitQuill.git](https://github.com/ciphernom/BitQuill.git)
+    git clone https://github.com/ciphernom/BitQuill.git
     cd BitQuill
     ```
 
